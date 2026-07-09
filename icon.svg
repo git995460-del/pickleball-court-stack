@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Pickleball court stack icon">
+  <rect width="512" height="512" rx="96" fill="#0f766e"/>
+  <rect x="88" y="96" width="336" height="320" rx="24" fill="#f8fafc"/>
+  <path d="M256 96v320M88 256h336M160 96v320M352 96v320" stroke="#0f766e" stroke-width="16"/>
+  <circle cx="176" cy="176" r="34" fill="#2563eb"/>
+  <circle cx="336" cy="176" r="34" fill="#c2410c"/>
+  <circle cx="176" cy="336" r="34" fill="#b45309"/>
+  <circle cx="336" cy="336" r="34" fill="#0f766e"/>
+</svg>
