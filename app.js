@@ -58,6 +58,9 @@ function loadState() {
                   startedAt: match.startedAt || round.createdAt || new Date().toISOString(),
                 }))
               : [],
+            partnerPairs: Array.isArray(round.partnerPairs)
+              ? round.partnerPairs
+              : partnerPairsFromMatches(round.matches || []),
             completedAt: round.completedAt || null,
           }))
         : [],
@@ -121,10 +124,25 @@ function playersById() {
   return new Map(state.players.map((player) => [player.id, player]));
 }
 
-function activePairMap(playerIds = new Set(activePlayers().map((player) => player.id))) {
+function sessionPartnerPairs() {
+  const round = currentRound();
+  return Array.isArray(round?.partnerPairs) ? round.partnerPairs : [];
+}
+
+function pairSources(options = {}) {
+  return [
+    ...(options.includeSessionPairs === false ? [] : sessionPartnerPairs()),
+    ...state.pairRequests,
+  ];
+}
+
+function activePairMap(
+  playerIds = new Set(activePlayers().map((player) => player.id)),
+  options = {},
+) {
   const map = new Map();
 
-  for (const pair of state.pairRequests) {
+  for (const pair of pairSources(options)) {
     if (!playerIds.has(pair.a) || !playerIds.has(pair.b)) continue;
     if (map.has(pair.a) || map.has(pair.b)) continue;
     map.set(pair.a, pair.b);
@@ -134,10 +152,62 @@ function activePairMap(playerIds = new Set(activePlayers().map((player) => playe
   return map;
 }
 
+function allPartnerMap(options = {}) {
+  const map = new Map();
+
+  for (const pair of pairSources(options)) {
+    if (map.has(pair.a) || map.has(pair.b)) continue;
+    map.set(pair.a, pair.b);
+    map.set(pair.b, pair.a);
+  }
+
+  return map;
+}
+
 function partnerForPlayer(playerId) {
-  const pair = state.pairRequests.find((request) => request.a === playerId || request.b === playerId);
-  if (!pair) return null;
-  return pair.a === playerId ? pair.b : pair.a;
+  return allPartnerMap().get(playerId) || null;
+}
+
+function pairFromIds(ids) {
+  if (!Array.isArray(ids) || ids.length !== 2) return null;
+  return {
+    id: uid("session-pair"),
+    a: ids[0],
+    b: ids[1],
+  };
+}
+
+function pairKey(pair) {
+  return [pair.a, pair.b].sort().join("|");
+}
+
+function appendPartnerPairs(existingPairs, newPairs) {
+  const pairs = [];
+  const used = new Set();
+
+  for (const pair of [...(existingPairs || []), ...(newPairs || [])]) {
+    if (!pair?.a || !pair?.b || used.has(pair.a) || used.has(pair.b)) continue;
+    pairs.push(pair);
+    used.add(pair.a);
+    used.add(pair.b);
+  }
+
+  return pairs;
+}
+
+function partnerPairsFromTeams(teams) {
+  return appendPartnerPairs(
+    [],
+    teams.map((team) => pairFromIds(team.ids)).filter(Boolean),
+  );
+}
+
+function partnerPairsFromMatches(matches) {
+  const teams = [];
+  for (const match of matches || []) {
+    teams.push({ ids: match.teamA }, { ids: match.teamB });
+  }
+  return partnerPairsFromTeams(teams);
 }
 
 function computeStats() {
@@ -354,6 +424,31 @@ function removePairRequest(pairId) {
   }));
 }
 
+function removeLockedPartner(pairId) {
+  const round = currentRound();
+  const pair = round?.partnerPairs?.find((item) => item.id === pairId);
+  if (!pair) return;
+
+  setState((current) => {
+    const roundIndex = current.rounds.length - 1;
+    const key = pairKey(pair);
+
+    return {
+      ...current,
+      pairRequests: current.pairRequests.filter((request) => pairKey(request) !== key),
+      rounds: current.rounds.map((item, index) =>
+        index === roundIndex
+          ? {
+              ...item,
+              partnerPairs: (item.partnerPairs || []).filter((lockedPair) => lockedPair.id !== pairId),
+            }
+          : item,
+      ),
+    };
+  });
+  showToast(`${playerName(pair.a)} and ${playerName(pair.b)} can split next game`);
+}
+
 function assignPairDraft(playerId, requestedSlot = "") {
   if (!playerId || !state.players.some((player) => player.id === playerId && player.active)) {
     return;
@@ -427,9 +522,10 @@ function compareUnitRank(a, b, stats) {
   return 0;
 }
 
-function buildSelectionUnits(players, stats) {
+function buildSelectionUnits(players, stats, options = {}) {
   const activeIds = new Set(players.map((player) => player.id));
-  const pairMap = activePairMap(activeIds);
+  const pairMap = activePairMap(activeIds, options);
+  const partnerMap = allPartnerMap(options);
   const byId = new Map(players.map((player) => [player.id, player]));
   const used = new Set();
   const units = [];
@@ -439,7 +535,7 @@ function buildSelectionUnits(players, stats) {
   for (const player of ordered) {
     if (used.has(player.id)) continue;
 
-    const partnerId = pairMap.get(player.id);
+    const partnerId = partnerMap.get(player.id);
     const partner = partnerId ? byId.get(partnerId) : null;
 
     if (partner && !used.has(partner.id)) {
@@ -449,6 +545,11 @@ function buildSelectionUnits(players, stats) {
         ids: [player.id, partner.id],
         names: [player.name, partner.name].sort().join(" "),
       });
+      continue;
+    }
+
+    if (partnerId && !pairMap.has(player.id)) {
+      used.add(player.id);
       continue;
     }
 
@@ -478,9 +579,9 @@ function canFillUnits(units, startIndex, target) {
   return false;
 }
 
-function selectPlayersForRound(players, slots, stats) {
+function selectPlayersForRound(players, slots, stats, options = {}) {
   const byId = new Map(players.map((player) => [player.id, player]));
-  const units = buildSelectionUnits(players, stats);
+  const units = buildSelectionUnits(players, stats, options);
   const selectedIds = [];
 
   for (let index = 0; index < units.length; index += 1) {
@@ -493,20 +594,21 @@ function selectPlayersForRound(players, slots, stats) {
   }
 
   if (selectedIds.length < slots) {
-    const ordered = [...players].sort((a, b) => compareRank(a, b, rankForPlay, stats));
-    for (const player of ordered) {
-      if (selectedIds.length >= slots) break;
-      if (!selectedIds.includes(player.id)) selectedIds.push(player.id);
+    for (const unit of units) {
+      if (selectedIds.length + unit.ids.length > slots) continue;
+      if (unit.ids.some((id) => selectedIds.includes(id))) continue;
+      selectedIds.push(...unit.ids);
     }
   }
 
   return selectedIds.slice(0, slots).map((id) => byId.get(id)).filter(Boolean);
 }
 
-function makeTeams(selected, stats) {
+function makeTeams(selected, stats, options = {}) {
   const byId = new Map(selected.map((player) => [player.id, player]));
   const selectedIds = new Set(selected.map((player) => player.id));
-  const pairMap = activePairMap(selectedIds);
+  const pairMap = activePairMap(selectedIds, options);
+  const partnerMap = allPartnerMap(options);
   const ordered = [...selected].sort((a, b) => compareRank(a, b, rankForCourt, stats));
   const used = new Set();
   const singles = [];
@@ -515,7 +617,7 @@ function makeTeams(selected, stats) {
   for (const player of ordered) {
     if (used.has(player.id)) continue;
 
-    const partnerId = pairMap.get(player.id);
+    const partnerId = partnerMap.get(player.id);
     const partner = partnerId ? byId.get(partnerId) : null;
 
     if (partner && !used.has(partner.id)) {
@@ -526,6 +628,11 @@ function makeTeams(selected, stats) {
         requested: true,
         power: playerPower(player, stats) + playerPower(partner, stats),
       });
+      continue;
+    }
+
+    if (partnerId && !pairMap.has(player.id)) {
+      used.add(player.id);
       continue;
     }
 
@@ -559,13 +666,13 @@ function buildRoundPlan(stats = computeStats(), options = {}) {
     };
   }
 
-  const selected = selectPlayersForRound(players, slots, stats);
+  const selected = selectPlayersForRound(players, slots, stats, options);
   const selectedIds = new Set(selected.map((player) => player.id));
   const restIds = players
     .filter((player) => !selectedIds.has(player.id))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((player) => player.id);
-  const teams = makeTeams(selected, stats);
+  const teams = makeTeams(selected, stats, options);
 
   return {
     matches: teamsToMatches(teams, { startedAt: options.startedAt }),
@@ -594,14 +701,14 @@ function teamsToMatches(teams, options = {}) {
   return matches;
 }
 
-function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set()) {
+function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set(), options = {}) {
   const availablePlayers = activePlayersFrom(appState).filter((player) => !excludedIds.has(player.id));
   if (availablePlayers.length < 4) return null;
 
-  const selected = selectPlayersForRound(availablePlayers, 4, stats);
+  const selected = selectPlayersForRound(availablePlayers, 4, stats, options);
   if (selected.length < 4) return null;
 
-  const teams = makeTeams(selected, stats);
+  const teams = makeTeams(selected, stats, options);
   return teamsToMatches(teams, {
     courtStart: court,
     startedAt: new Date().toISOString(),
@@ -636,6 +743,7 @@ function startRound() {
         restIds: plan.restIds,
         matches: plan.matches,
         completedMatches: [],
+        partnerPairs: partnerPairsFromMatches(plan.matches),
       },
     ],
   }));
@@ -664,6 +772,7 @@ function recordWinner(matchId, winner) {
       completedAt: null,
       completedMatches: [...(round.completedMatches || []), completedMatch],
       matches: remainingMatches,
+      partnerPairs: round.partnerPairs || [],
     };
     const tempState = {
       ...current,
@@ -673,10 +782,15 @@ function recordWinner(matchId, winner) {
     const busyIds = activePlayerIdsOnCourts(baseRound);
     const nextMatch = buildCourtMatchFromState(tempState, match.court, statsAfterResult, busyIds);
     const nextMatches = nextMatch ? [...remainingMatches, nextMatch] : remainingMatches;
+    const nextPartnerPairs = nextMatch ? partnerPairsFromMatches([nextMatch]) : [];
+    const partnerPairs = nextMatch
+      ? appendPartnerPairs(baseRound.partnerPairs, nextPartnerPairs)
+      : baseRound.partnerPairs;
     const updatedRound = {
       ...baseRound,
       completedAt: nextMatches.length ? null : completedAt,
       matches: nextMatches.sort((a, b) => a.court - b.court),
+      partnerPairs,
     };
     updatedRound.restIds = waitingPlayerIdsFor(
       {
@@ -691,6 +805,53 @@ function recordWinner(matchId, winner) {
       rounds: current.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
     };
   });
+}
+
+function reshufflePartners() {
+  const round = currentRound();
+  if (!round) return;
+
+  const waitingIds = waitingPlayerIds(round);
+  if (waitingIds.length < 2) {
+    showToast("Need waiting players to reshuffle");
+    return;
+  }
+
+  if (!window.confirm("Reshuffle partners for waiting players? Active court teams stay together until their game ends.")) {
+    return;
+  }
+
+  setState((current) => {
+    const roundIndex = current.rounds.length - 1;
+    if (roundIndex < 0) return current;
+
+    const activeRound = current.rounds[roundIndex];
+    const busyIds = activePlayerIdsOnCourts(activeRound);
+    const waitingPlayers = activePlayersFrom(current).filter((player) => !busyIds.has(player.id));
+    const waitingTeams = makeTeams(waitingPlayers, computeStatsFor(current), {
+      includeSessionPairs: false,
+    });
+    const activeCourtPairs = partnerPairsFromMatches(activeMatches(activeRound));
+    const waitingPairs = partnerPairsFromTeams(waitingTeams);
+    const updatedRound = {
+      ...activeRound,
+      partnerPairs: appendPartnerPairs(activeCourtPairs, waitingPairs),
+    };
+    updatedRound.restIds = waitingPlayerIdsFor(
+      {
+        ...current,
+        rounds: current.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
+      },
+      updatedRound,
+    );
+
+    return {
+      ...current,
+      rounds: current.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
+    };
+  });
+
+  showToast("Waiting partners reshuffled");
 }
 
 function clearRounds() {
@@ -713,10 +874,12 @@ function resetSession() {
     return;
   }
 
-  if (!window.confirm("Reset for a new day? This clears players and rounds.")) return;
+  if (!window.confirm("Reset for a new day? This clears games but keeps the roster names.")) return;
 
   setState((current) => ({
     ...defaultState,
+    players: current.players,
+    pairRequests: current.pairRequests,
     courtCount: current.courtCount,
     schedule: current.schedule,
   }));
@@ -885,12 +1048,13 @@ function tabButton(tab, label) {
 }
 
 function renderPlayers(stats) {
-  const players = [...state.players].sort((a, b) => a.name.localeCompare(b.name));
+  const players = [...state.players].sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
 
   return `
     ${renderSchedule()}
-
-    ${renderUpNext(stats)}
 
     <section class="panel hero-panel">
       <div class="section-head">
@@ -925,7 +1089,9 @@ function renderPlayers(stats) {
 function renderUpNext(stats) {
   const round = currentRound();
   const excludedIds = round ? activePlayerIdsOnCourts(round) : new Set();
-  const plan = buildRoundPlan(stats, { excludedIds });
+  const plan = buildRoundPlan(stats, {
+    excludedIds,
+  });
 
   return `
     <section class="panel up-next-panel">
@@ -993,11 +1159,19 @@ function renderPlayer(player, record) {
 
 function renderPairRequests(players) {
   const selectablePlayers = players.filter((player) => player.active);
+  const lockedPairs = sessionPartnerPairs();
+  const lockedKeys = new Set(lockedPairs.map(pairKey));
+  const requestedPairs = state.pairRequests.filter((pair) => !lockedKeys.has(pairKey(pair)));
+  const pairRows = [
+    ...lockedPairs.map((pair) => renderLockedPair(pair)),
+    ...requestedPairs.map((pair) => renderPairRequest(pair)),
+  ];
+
   return `
     <section class="panel partner-panel">
       <div class="section-head">
         <h3>Partner Requests</h3>
-        <span class="small">${state.pairRequests.length} pair${state.pairRequests.length === 1 ? "" : "s"}</span>
+        <span class="small">${pairRows.length} pair${pairRows.length === 1 ? "" : "s"}</span>
       </div>
       ${
         selectablePlayers.length >= 2
@@ -1021,8 +1195,8 @@ function renderPairRequests(players) {
       }
       <div class="pair-list">
         ${
-          state.pairRequests.length
-            ? state.pairRequests.map((pair) => renderPairRequest(pair)).join("")
+          pairRows.length
+            ? pairRows.join("")
             : `<div class="subtle-note">Requested partners are kept together when both players are active and selected for the round.</div>`
         }
       </div>
@@ -1064,6 +1238,17 @@ function renderPairRequest(pair) {
   `;
 }
 
+function renderLockedPair(pair) {
+  return `
+    <div class="pair-row locked-pair">
+      <span>${escapeHtml(playerName(pair.a))} <small>locked</small></span>
+      <strong>+</strong>
+      <span>${escapeHtml(playerName(pair.b))}</span>
+      <button class="mini-button danger-mini" data-remove-locked-pair="${pair.id}" type="button">X</button>
+    </div>
+  `;
+}
+
 function renderCourts(stats, round) {
   const playingCount = round ? activeMatches(round).length : 0;
   return `
@@ -1075,10 +1260,13 @@ function renderCourts(stats, round) {
         </div>
         <div class="actions">
           ${round ? "" : `<button class="primary" id="start-round" type="button">Start Session</button>`}
+          ${round ? `<button class="secondary" id="reshuffle-partners" type="button">Reshuffle Waiting</button>` : ""}
           <button class="secondary" id="undo-round" type="button" ${state.rounds.length ? "" : "disabled"}>Undo</button>
         </div>
       </div>
     </section>
+
+    ${renderUpNext(stats)}
 
     ${round ? renderRound(round, stats) : renderNoRound()}
   `;
@@ -1344,6 +1532,10 @@ function bindEvents() {
     button.addEventListener("click", () => removePairRequest(button.dataset.removePair));
   });
 
+  app.querySelectorAll("[data-remove-locked-pair]").forEach((button) => {
+    button.addEventListener("click", () => removeLockedPartner(button.dataset.removeLockedPair));
+  });
+
   app.querySelectorAll("[data-toggle-player]").forEach((button) => {
     button.addEventListener("click", () => togglePlayer(button.dataset.togglePlayer));
   });
@@ -1397,6 +1589,9 @@ function bindEvents() {
 
   const startRoundButton = app.querySelector("#start-round");
   if (startRoundButton) startRoundButton.addEventListener("click", startRound);
+
+  const reshuffleButton = app.querySelector("#reshuffle-partners");
+  if (reshuffleButton) reshuffleButton.addEventListener("click", reshufflePartners);
 
   const clearRoundsButton = app.querySelector("#clear-rounds");
   if (clearRoundsButton) clearRoundsButton.addEventListener("click", clearRounds);
