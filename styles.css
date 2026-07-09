@@ -17,6 +17,9 @@
   --red-soft: #ffe8df;
   --violet-soft: #eee8ff;
   --shadow: 0 14px 34px rgba(23, 33, 43, 0.1);
+  --court-color: var(--teal);
+  --court-soft: var(--green-soft);
+  --court-ink: #0f513f;
 }
 
 * {
@@ -153,6 +156,7 @@ button:disabled {
   background: var(--panel);
   color: var(--muted);
   font-weight: 800;
+  padding: 0 6px;
 }
 
 .tab-button.active {
@@ -486,11 +490,15 @@ button:disabled {
 
 .up-next-card {
   display: grid;
-  gap: 8px;
-  border: 1px solid var(--line);
+  gap: 10px;
+  min-height: 118px;
+  border: 2px solid var(--court-color);
   border-radius: 8px;
-  background: var(--panel-soft);
-  padding: 10px;
+  background:
+    linear-gradient(135deg, var(--court-soft), #fff 72%),
+    var(--panel-soft);
+  padding: 12px;
+  box-shadow: 0 10px 22px rgba(23, 33, 43, 0.08);
 }
 
 .up-next-court {
@@ -501,13 +509,17 @@ button:disabled {
 }
 
 .up-next-court strong {
-  font-size: 0.92rem;
+  color: var(--court-ink);
+  font-size: 0.98rem;
 }
 
 .up-next-court span {
-  color: var(--muted);
-  font-size: 0.74rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--court-ink);
+  font-size: 0.72rem;
   font-weight: 800;
+  padding: 4px 8px;
   text-align: right;
 }
 
@@ -517,12 +529,15 @@ button:disabled {
 }
 
 .up-next-teams span {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
   overflow-wrap: anywhere;
+  padding: 8px 10px;
   font-weight: 850;
 }
 
 .up-next-teams em {
-  color: var(--muted);
+  color: var(--court-ink);
   font-size: 0.74rem;
   font-style: normal;
   font-weight: 900;
@@ -697,8 +712,10 @@ button:disabled {
 }
 
 .match-card {
+  min-height: 236px;
+  border: 2px solid var(--court-color);
   overflow: hidden;
-  box-shadow: none;
+  box-shadow: 0 12px 26px rgba(23, 33, 43, 0.1);
 }
 
 .match-title {
@@ -706,18 +723,25 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
-  background: #f9fafb;
+  padding: 14px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--court-color) 28%, var(--line));
+  background:
+    linear-gradient(135deg, var(--court-soft), #fff 84%),
+    #f9fafb;
 }
 
 .match-title strong {
-  font-size: 0.94rem;
+  color: var(--court-ink);
+  font-size: 1.08rem;
 }
 
 .match-title span {
-  color: var(--muted);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--court-ink);
   font-size: 0.78rem;
+  font-weight: 850;
+  padding: 4px 8px;
 }
 
 .teams {
@@ -730,7 +754,8 @@ button:disabled {
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: center;
-  padding: 12px;
+  min-height: 84px;
+  padding: 16px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -748,7 +773,7 @@ button:disabled {
 
 .team-label {
   display: block;
-  color: var(--muted);
+  color: var(--court-ink);
   font-size: 0.72rem;
   font-weight: 900;
   text-transform: uppercase;
@@ -756,17 +781,19 @@ button:disabled {
 
 .team-players {
   display: block;
-  margin-top: 3px;
+  margin-top: 5px;
   overflow-wrap: anywhere;
-  font-size: 0.98rem;
+  font-size: 1.08rem;
   font-weight: 900;
 }
 
 .winner-button {
-  min-width: 86px;
+  min-width: 98px;
+  min-height: 52px;
   background: #fff;
   border-color: var(--line);
   color: var(--ink);
+  font-size: 1rem;
 }
 
 .team.winner .winner-button {
@@ -784,6 +811,68 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.court-idle {
+  background:
+    linear-gradient(135deg, var(--court-soft), #fff 76%),
+    var(--panel);
+}
+
+.court-idle-body {
+  display: grid;
+  min-height: 164px;
+  align-content: center;
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+}
+
+.court-idle-body strong {
+  color: var(--court-ink);
+  font-size: 1.04rem;
+}
+
+.court-idle-body span {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.court-tone-1 {
+  --court-color: #08756f;
+  --court-soft: #dff7ef;
+  --court-ink: #0f513f;
+}
+
+.court-tone-2 {
+  --court-color: #2563eb;
+  --court-soft: #e5edff;
+  --court-ink: #164aa7;
+}
+
+.court-tone-3 {
+  --court-color: #c2410c;
+  --court-soft: #ffe8df;
+  --court-ink: #8f2d0c;
+}
+
+.court-tone-4 {
+  --court-color: #b7791f;
+  --court-soft: #fff2cc;
+  --court-ink: #76520c;
+}
+
+.court-tone-5 {
+  --court-color: #6d28d9;
+  --court-soft: #eee8ff;
+  --court-ink: #4c2a85;
+}
+
+.court-tone-6 {
+  --court-color: #047857;
+  --court-soft: #dcfce7;
+  --court-ink: #14532d;
 }
 
 .empty-state {
@@ -947,7 +1036,7 @@ button:disabled {
 
   .court-list,
   .up-next-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
   }
 
   .forecast-grid {

@@ -46,6 +46,18 @@ function loadState() {
       rounds: Array.isArray(saved.rounds)
         ? saved.rounds.map((round) => ({
             ...round,
+            matches: Array.isArray(round.matches)
+              ? round.matches.map((match) => ({
+                  ...match,
+                  startedAt: match.startedAt || round.createdAt || new Date().toISOString(),
+                }))
+              : [],
+            completedMatches: Array.isArray(round.completedMatches)
+              ? round.completedMatches.map((match) => ({
+                  ...match,
+                  startedAt: match.startedAt || round.createdAt || new Date().toISOString(),
+                }))
+              : [],
             completedAt: round.completedAt || null,
           }))
         : [],
@@ -101,6 +113,10 @@ function activePlayers() {
   return state.players.filter((player) => player.active);
 }
 
+function activePlayersFrom(appState) {
+  return appState.players.filter((player) => player.active);
+}
+
 function playersById() {
   return new Map(state.players.map((player) => [player.id, player]));
 }
@@ -125,15 +141,19 @@ function partnerForPlayer(playerId) {
 }
 
 function computeStats() {
+  return computeStatsFor(state);
+}
+
+function computeStatsFor(appState) {
   const stats = Object.fromEntries(
-    state.players.map((player) => [
+    appState.players.map((player) => [
       player.id,
       { played: 0, wins: 0, losses: 0, rests: 0, last: "new" },
     ]),
   );
 
-  for (const round of state.rounds) {
-    for (const playerId of round.restIds) {
+  for (const round of appState.rounds) {
+    for (const playerId of round.restIds || []) {
       if (stats[playerId]) {
         stats[playerId].rests += 1;
         if (stats[playerId].last === "new") {
@@ -142,7 +162,9 @@ function computeStats() {
       }
     }
 
-    for (const match of round.matches) {
+    const matchRecords = [...(round.completedMatches || []), ...(round.matches || [])];
+
+    for (const match of matchRecords) {
       for (const playerId of [...match.teamA, ...match.teamB]) {
         if (stats[playerId]) stats[playerId].played += 1;
       }
@@ -205,7 +227,40 @@ function currentRound() {
 }
 
 function roundComplete(round) {
-  return Boolean(round?.matches.length) && round.matches.every((match) => match.winner);
+  return Boolean(round) && activeMatches(round).length === 0;
+}
+
+function activeMatches(round) {
+  return (round?.matches || []).filter((match) => !match.winner);
+}
+
+function completedMatches(round) {
+  return [...(round?.completedMatches || []), ...(round?.matches || []).filter((match) => match.winner)];
+}
+
+function activePlayerIdsOnCourts(round, exceptMatchId = "") {
+  const ids = new Set();
+
+  for (const match of activeMatches(round)) {
+    if (match.id === exceptMatchId) continue;
+    for (const playerId of [...match.teamA, ...match.teamB]) {
+      ids.add(playerId);
+    }
+  }
+
+  return ids;
+}
+
+function waitingPlayerIdsFor(appState, round) {
+  const busyIds = activePlayerIdsOnCourts(round);
+  return activePlayersFrom(appState)
+    .filter((player) => !busyIds.has(player.id))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((player) => player.id);
+}
+
+function waitingPlayerIds(round) {
+  return waitingPlayerIdsFor(state, round);
 }
 
 function addBulkPlayers() {
@@ -489,10 +544,12 @@ function makeTeams(selected, stats) {
   return teams.sort((a, b) => b.power - a.power);
 }
 
-function buildRoundPlan(stats = computeStats()) {
-  const players = activePlayers();
+function buildRoundPlan(stats = computeStats(), options = {}) {
+  const excludedIds = options.excludedIds || new Set();
+  const maxMatches = Math.max(1, Number(options.maxMatches || state.courtCount) || 1);
+  const players = activePlayers().filter((player) => !excludedIds.has(player.id));
   const maxSlots = Math.max(0, Math.floor(players.length / 4) * 4);
-  const slots = Math.min(state.courtCount * 4, maxSlots);
+  const slots = Math.min(maxMatches * 4, maxSlots);
 
   if (slots < 4) {
     return {
@@ -511,37 +568,54 @@ function buildRoundPlan(stats = computeStats()) {
   const teams = makeTeams(selected, stats);
 
   return {
-    matches: teamsToMatches(teams),
+    matches: teamsToMatches(teams, { startedAt: options.startedAt }),
     restIds,
     slots,
   };
 }
 
-function teamsToMatches(teams) {
+function teamsToMatches(teams, options = {}) {
   const matches = [];
+  const startedAt = options.startedAt || new Date().toISOString();
+  const courtStart = options.courtStart || 1;
 
   for (let index = 0; index < teams.length; index += 2) {
     if (!teams[index] || !teams[index + 1]) continue;
     matches.push({
       id: uid("match"),
-      court: matches.length + 1,
+      court: courtStart + matches.length,
       teamA: teams[index].ids,
       teamB: teams[index + 1].ids,
       winner: null,
+      startedAt,
     });
   }
 
   return matches;
 }
 
+function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set()) {
+  const availablePlayers = activePlayersFrom(appState).filter((player) => !excludedIds.has(player.id));
+  if (availablePlayers.length < 4) return null;
+
+  const selected = selectPlayersForRound(availablePlayers, 4, stats);
+  if (selected.length < 4) return null;
+
+  const teams = makeTeams(selected, stats);
+  return teamsToMatches(teams, {
+    courtStart: court,
+    startedAt: new Date().toISOString(),
+  })[0] || null;
+}
+
 function startRound() {
-  const lastRound = currentRound();
-  if (lastRound && !roundComplete(lastRound)) {
-    showToast("Finish the current round first");
+  if (state.rounds.length) {
+    showToast("Reset Day before starting a new session");
     return;
   }
 
-  const plan = buildRoundPlan();
+  const startedAt = new Date().toISOString();
+  const plan = buildRoundPlan(computeStats(), { startedAt });
 
   if (plan.slots < 4) {
     showToast("At least 4 active players are needed");
@@ -557,10 +631,11 @@ function startRound() {
       {
         id: uid("round"),
         number: current.rounds.length + 1,
-        createdAt: new Date().toISOString(),
+        createdAt: startedAt,
         completedAt: null,
         restIds: plan.restIds,
         matches: plan.matches,
+        completedMatches: [],
       },
     ],
   }));
@@ -569,24 +644,53 @@ function startRound() {
 function recordWinner(matchId, winner) {
   const completedAt = new Date().toISOString();
 
-  setState((current) => ({
-    ...current,
-    rounds: current.rounds.map((round, roundIndex) => {
-      if (roundIndex !== current.rounds.length - 1) return round;
+  setState((current) => {
+    const roundIndex = current.rounds.length - 1;
+    if (roundIndex < 0) return current;
 
-      const matches = round.matches.map((match) =>
-        match.id === matchId ? { ...match, winner } : match,
-      );
+    const round = current.rounds[roundIndex];
+    const match = activeMatches(round).find((item) => item.id === matchId);
+    if (!match) return current;
 
-      return {
-        ...round,
-        matches,
-        completedAt: matches.every((match) => match.winner)
-          ? round.completedAt || completedAt
-          : null,
-      };
-    }),
-  }));
+    const completedMatch = {
+      ...match,
+      winner,
+      completedAt,
+    };
+
+    const remainingMatches = activeMatches(round).filter((item) => item.id !== matchId);
+    const baseRound = {
+      ...round,
+      completedAt: null,
+      completedMatches: [...(round.completedMatches || []), completedMatch],
+      matches: remainingMatches,
+    };
+    const tempState = {
+      ...current,
+      rounds: current.rounds.map((item, index) => (index === roundIndex ? baseRound : item)),
+    };
+    const statsAfterResult = computeStatsFor(tempState);
+    const busyIds = activePlayerIdsOnCourts(baseRound);
+    const nextMatch = buildCourtMatchFromState(tempState, match.court, statsAfterResult, busyIds);
+    const nextMatches = nextMatch ? [...remainingMatches, nextMatch] : remainingMatches;
+    const updatedRound = {
+      ...baseRound,
+      completedAt: nextMatches.length ? null : completedAt,
+      matches: nextMatches.sort((a, b) => a.court - b.court),
+    };
+    updatedRound.restIds = waitingPlayerIdsFor(
+      {
+        ...tempState,
+        rounds: tempState.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
+      },
+      updatedRound,
+    );
+
+    return {
+      ...current,
+      rounds: current.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
+    };
+  });
 }
 
 function clearRounds() {
@@ -654,19 +758,27 @@ function scheduleWindow() {
   return { now, start, end, remainingMinutes };
 }
 
-function completedRoundDurations() {
+function completedGameCount() {
+  return state.rounds.reduce(
+    (total, round) => total + completedMatches(round).filter((match) => match.winner).length,
+    0,
+  );
+}
+
+function completedCourtGameDurations() {
   return state.rounds
-    .filter((round) => roundComplete(round) && round.createdAt && round.completedAt)
-    .map((round) => {
-      const started = new Date(round.createdAt).getTime();
-      const finished = new Date(round.completedAt).getTime();
+    .flatMap((round) => completedMatches(round))
+    .filter((match) => match.startedAt && match.completedAt)
+    .map((match) => {
+      const started = new Date(match.startedAt).getTime();
+      const finished = new Date(match.completedAt).getTime();
       return Math.max(1, (finished - started) / 60000);
     })
     .filter((minutes) => Number.isFinite(minutes) && minutes > 0);
 }
 
 function computeForecast() {
-  const durations = completedRoundDurations();
+  const durations = completedCourtGameDurations();
   const fallbackMinutes = clampFallbackMinutes(state.schedule.fallbackMinutes);
   const averageMinutes = durations.length
     ? durations.reduce((total, minutes) => total + minutes, 0) / durations.length
@@ -675,30 +787,22 @@ function computeForecast() {
   const round = currentRound();
   const activeCount = activePlayers().length;
   const possibleCourts = Math.min(state.courtCount, Math.floor(activeCount / 4));
-  const courtGamesPerRound = round?.matches.length || possibleCourts;
-  const openGames = round && !roundComplete(round)
-    ? round.matches.filter((match) => !match.winner).length
-    : 0;
+  const runningGames = round ? activeMatches(round).length : 0;
   const { remainingMinutes, start, end } = scheduleWindow();
-  const futureWindow = openGames
-    ? Math.max(0, remainingMinutes - averageMinutes)
-    : remainingMinutes;
-  const futureRounds = courtGamesPerRound
-    ? Math.floor(futureWindow / averageMinutes)
-    : 0;
-  const gamesLeft = openGames + futureRounds * courtGamesPerRound;
+  const gamesLeft = averageMinutes ? Math.floor(remainingMinutes / averageMinutes) : 0;
+  const courtCapacity = gamesLeft * Math.max(1, possibleCourts || state.courtCount);
 
   return {
     averageMinutes,
     durationCount: durations.length,
     remainingMinutes,
-    futureRounds,
+    courtCapacity,
     gamesLeft,
-    openGames,
-    courtGamesPerRound,
+    runningGames,
+    possibleCourts,
     start,
     end,
-    source: durations.length ? "from completed rounds" : "starting estimate",
+    source: durations.length ? "from completed court games" : "starting estimate",
   };
 }
 
@@ -722,6 +826,16 @@ function currentRoundElapsedLabel(round) {
   return formatMinutes((end - started) / 60000);
 }
 
+function matchElapsedLabel(match) {
+  if (!match?.startedAt) return "0 min";
+  const started = new Date(match.startedAt).getTime();
+  return formatMinutes((Date.now() - started) / 60000);
+}
+
+function courtToneClass(court) {
+  return `court-tone-${((court - 1) % 6) + 1}`;
+}
+
 function render() {
   const stats = computeStats();
   const activeCount = activePlayers().length;
@@ -734,7 +848,7 @@ function render() {
           <img class="brand-icon" src="./icon.svg" alt="" />
           <div class="brand">
             <h1 class="brand-title">Pickleball Court Stack</h1>
-            <p class="brand-subtitle">${state.courtCount} court${state.courtCount === 1 ? "" : "s"} - ${state.rounds.length} round${state.rounds.length === 1 ? "" : "s"}</p>
+            <p class="brand-subtitle">${state.courtCount} court${state.courtCount === 1 ? "" : "s"} - ${completedGameCount()} finished</p>
           </div>
         </div>
         <div class="top-actions">
@@ -748,7 +862,7 @@ function render() {
       <nav class="tabs" aria-label="App sections">
         ${tabButton("players", "Game Info")}
         ${tabButton("courts", "Courts")}
-        ${tabButton("ranking", "Ranking")}
+        ${tabButton("ranking", "Player Ranking")}
       </nav>
     </header>
     <section class="content">
@@ -810,28 +924,23 @@ function renderPlayers(stats) {
 
 function renderUpNext(stats) {
   const round = currentRound();
-  const waitingForResults = round && !roundComplete(round);
-  const plan = buildRoundPlan(stats);
+  const excludedIds = round ? activePlayerIdsOnCourts(round) : new Set();
+  const plan = buildRoundPlan(stats, { excludedIds });
 
   return `
     <section class="panel up-next-panel">
       <div class="section-head">
         <h2>Up Next</h2>
-        <span class="small">${plan.matches.length ? `${plan.matches.length} projected` : "not ready"}</span>
-      </div>
-      <div class="subtle-note">
-        ${waitingForResults
-          ? "Projected from results entered so far. Final order can change until every current court has a winner."
-          : "Projected court numbers are a guide. If a different court opens first, move the next game to the first open court."}
+        <span class="small">${plan.matches.length ? `${plan.matches.length} queued` : "not ready"}</span>
       </div>
       ${
         plan.matches.length
           ? `<div class="up-next-list">${plan.matches.map((match) => renderUpNextMatch(match)).join("")}</div>`
-          : `<div class="empty-state">Add at least 4 active players to see who plays next</div>`
+          : `<div class="empty-state">${round ? "Waiting for enough available players" : "Add at least 4 active players to see who plays next"}</div>`
       }
       ${
         plan.restIds.length
-          ? `<div class="up-next-rest"><span>Projected rest:</span> ${plan.restIds
+          ? `<div class="up-next-rest"><span>Waiting:</span> ${plan.restIds
               .map((id) => `<strong>${escapeHtml(playerName(id))}</strong>`)
               .join("")}</div>`
           : ""
@@ -842,10 +951,10 @@ function renderUpNext(stats) {
 
 function renderUpNextMatch(match) {
   return `
-    <article class="up-next-card">
+    <article class="up-next-card ${courtToneClass(match.court)}">
       <div class="up-next-court">
-        <strong>Projected Court ${match.court}</strong>
-        <span>or first open court</span>
+        <strong>Next Game ${match.court}</strong>
+        <span>first open court</span>
       </div>
       <div class="up-next-teams">
         <span>${match.teamA.map((id) => escapeHtml(playerName(id))).join(" / ")}</span>
@@ -956,15 +1065,16 @@ function renderPairRequest(pair) {
 }
 
 function renderCourts(stats, round) {
+  const playingCount = round ? activeMatches(round).length : 0;
   return `
     <section class="panel live-courts-panel">
       <div class="round-header">
         <div class="round-title">
-          <h2>${round ? `Round ${round.number}` : "No Active Round"}</h2>
-          <span>${round ? `${currentRoundElapsedLabel(round)} elapsed` : `${activePlayers().length} active players`}</span>
+          <h2>${round ? "Live Courts" : "No Active Session"}</h2>
+          <span>${round ? `${playingCount} court${playingCount === 1 ? "" : "s"} playing` : `${activePlayers().length} active players`}</span>
         </div>
         <div class="actions">
-          <button class="primary" id="start-round" type="button">${round && roundComplete(round) ? "Next Round" : "Start Round"}</button>
+          ${round ? "" : `<button class="primary" id="start-round" type="button">Start Session</button>`}
           <button class="secondary" id="undo-round" type="button" ${state.rounds.length ? "" : "disabled"}>Undo</button>
         </div>
       </div>
@@ -1005,10 +1115,10 @@ function renderSchedule() {
         </label>
       </div>
       <div class="forecast-grid">
-        ${summaryStat("Avg round", formatMinutes(forecast.averageMinutes), "teal", forecast.source)}
+        ${summaryStat("Avg court game", formatMinutes(forecast.averageMinutes), "teal", forecast.source)}
         ${summaryStat("Time left", formatMinutes(forecast.remainingMinutes), "blue", "until scheduled end")}
-        ${summaryStat("Games left", forecast.gamesLeft, "amber", `${forecast.openGames} open now`)}
-        ${summaryStat("Future rounds", forecast.futureRounds, "coral", `${forecast.courtGamesPerRound || 0} games per round`)}
+        ${summaryStat("Games left", forecast.gamesLeft, "amber", "based on court game time")}
+        ${summaryStat("Running now", forecast.runningGames, "coral", `${forecast.possibleCourts || state.courtCount} usable court${(forecast.possibleCourts || state.courtCount) === 1 ? "" : "s"}`)}
       </div>
     </section>
   `;
@@ -1017,48 +1127,60 @@ function renderSchedule() {
 function renderNoRound() {
   return `
     <section class="empty-state">
-      ${activePlayers().length < 4 ? "Add at least 4 active players" : "Ready for round 1"}
+      ${activePlayers().length < 4 ? "Add at least 4 active players" : "Ready to start"}
     </section>
   `;
 }
 
 function renderRound(round, stats) {
+  const waitingIds = waitingPlayerIds(round);
+  const courtNumbers = Array.from({ length: state.courtCount }, (_, index) => index + 1);
   return `
-    <section class="panel compact-summary">
-      <div class="stats-grid">
-        ${summaryStat("Elapsed", currentRoundElapsedLabel(round), "teal")}
-        ${summaryStat("Court games", round.matches.length, "blue")}
-        ${summaryStat("Open", round.matches.filter((match) => !match.winner).length, "coral")}
-        ${summaryStat("Resting", round.restIds.length, "amber")}
-      </div>
-    </section>
     <section class="court-list">
-      ${round.matches.map((match) => renderMatch(match)).join("")}
+      ${courtNumbers.map((court) => renderCourtSlot(round, court)).join("")}
     </section>
     <section class="panel rest-panel">
       <div class="section-head">
-        <h3>Rest / Bye</h3>
-        <span class="small">${round.restIds.length} player${round.restIds.length === 1 ? "" : "s"}</span>
+        <h3>Waiting / Available</h3>
+        <span class="small">${waitingIds.length} player${waitingIds.length === 1 ? "" : "s"}</span>
       </div>
       <div class="rest-list">
         ${
-          round.restIds.length
-            ? round.restIds
+          waitingIds.length
+            ? waitingIds
                 .map((playerId) => `<span class="badge rest">${escapeHtml(playerName(playerId))}</span>`)
                 .join("")
-            : `<span class="badge win">Everyone plays</span>`
+            : `<span class="badge win">Everyone is on court</span>`
         }
       </div>
     </section>
   `;
 }
 
+function renderCourtSlot(round, court) {
+  const match = activeMatches(round).find((item) => item.court === court);
+  if (match) return renderMatch(match);
+
+  return `
+    <article class="match-card court-idle ${courtToneClass(court)}">
+      <div class="match-title">
+        <strong>Court ${court}</strong>
+        <span>open</span>
+      </div>
+      <div class="court-idle-body">
+        <strong>Waiting for 4 available players</strong>
+        <span>The next game will load here after enough players are free.</span>
+      </div>
+    </article>
+  `;
+}
+
 function renderMatch(match) {
   return `
-    <article class="match-card">
+    <article class="match-card ${courtToneClass(match.court)}">
       <div class="match-title">
         <strong>Court ${match.court}</strong>
-        <span>${match.winner ? "winner entered" : "waiting"}</span>
+        <span>${matchElapsedLabel(match)} elapsed</span>
       </div>
       <div class="teams">
         ${renderTeam(match, "A", match.teamA)}
@@ -1113,10 +1235,7 @@ function rankedPlayers(stats) {
 
 function renderRanking(stats) {
   const players = rankedPlayers(stats);
-  const completedGames = state.rounds.reduce(
-    (total, round) => total + round.matches.filter((match) => match.winner).length,
-    0,
-  );
+  const completedGames = completedGameCount();
 
   return `
     <section class="panel ranking-panel">
@@ -1297,3 +1416,7 @@ if ("serviceWorker" in navigator) {
 }
 
 render();
+
+window.setInterval(() => {
+  if (state.tab === "courts" && currentRound()) render();
+}, 30000);
