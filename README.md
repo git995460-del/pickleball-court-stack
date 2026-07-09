@@ -4,11 +4,15 @@ A free, mobile-friendly court rotation app for pickleball open play.
 
 ## What it does
 
-- Add players one at a time or paste a list.
+- Add one or many players by typing or pasting names.
 - Set the number of rented courts.
+- Set the session start/end time and estimate game time.
+- Forecast remaining games from completed round speed.
+- Mark requested partner pairs so the scheduler keeps them together when possible.
 - Assign doubles games to each court.
 - Enter the winning team after every game.
 - Create the next round with winners grouped near winners, losers near losers, and fair rest/bye rotation.
+- Reset the day while keeping court and schedule settings.
 - Save the session in the organizer's browser with `localStorage`.
 
 ## Free GitHub Pages hosting

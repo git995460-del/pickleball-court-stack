@@ -3,9 +3,18 @@ const STORAGE_KEY = "pickleball-court-stack-v1";
 const defaultState = {
   tab: "players",
   courtCount: 3,
+  schedule: {
+    startTime: "18:00",
+    endTime: "20:00",
+    fallbackMinutes: 15,
+  },
   players: [],
+  pairRequests: [],
+  pairDraft: {
+    a: "",
+    b: "",
+  },
   rounds: [],
-  playerDraft: "",
   bulkDraft: "",
   toast: "",
 };
@@ -18,7 +27,30 @@ const app = document.querySelector("#app");
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    return { ...defaultState, ...saved, toast: "" };
+    if (!saved) return { ...defaultState };
+
+    return {
+      ...defaultState,
+      ...saved,
+      schedule: {
+        ...defaultState.schedule,
+        ...(saved.schedule || {}),
+      },
+      players: Array.isArray(saved.players) ? saved.players : [],
+      pairRequests: Array.isArray(saved.pairRequests) ? saved.pairRequests : [],
+      pairDraft: {
+        ...defaultState.pairDraft,
+        ...(saved.pairDraft || {}),
+      },
+      rounds: Array.isArray(saved.rounds)
+        ? saved.rounds.map((round) => ({
+            ...round,
+            completedAt: round.completedAt || null,
+          }))
+        : [],
+      bulkDraft: saved.bulkDraft || "",
+      toast: "",
+    };
   } catch {
     return { ...defaultState };
   }
@@ -66,6 +98,29 @@ function playerName(playerId) {
 
 function activePlayers() {
   return state.players.filter((player) => player.active);
+}
+
+function playersById() {
+  return new Map(state.players.map((player) => [player.id, player]));
+}
+
+function activePairMap(playerIds = new Set(activePlayers().map((player) => player.id))) {
+  const map = new Map();
+
+  for (const pair of state.pairRequests) {
+    if (!playerIds.has(pair.a) || !playerIds.has(pair.b)) continue;
+    if (map.has(pair.a) || map.has(pair.b)) continue;
+    map.set(pair.a, pair.b);
+    map.set(pair.b, pair.a);
+  }
+
+  return map;
+}
+
+function partnerForPlayer(playerId) {
+  const pair = state.pairRequests.find((request) => request.a === playerId || request.b === playerId);
+  if (!pair) return null;
+  return pair.a === playerId ? pair.b : pair.a;
 }
 
 function computeStats() {
@@ -152,31 +207,16 @@ function roundComplete(round) {
   return Boolean(round?.matches.length) && round.matches.every((match) => match.winner);
 }
 
-function addPlayer(name) {
-  const trimmed = name.trim();
-  if (!trimmed) return;
-
-  setState((current) => ({
-    ...current,
-    playerDraft: "",
-    players: [
-      ...current.players,
-      {
-        id: uid("player"),
-        name: trimmed,
-        active: true,
-      },
-    ],
-  }));
-}
-
 function addBulkPlayers() {
   const names = state.bulkDraft
     .split(/[\n,;]+/)
     .map((name) => name.trim())
     .filter(Boolean);
 
-  if (!names.length) return;
+  if (!names.length) {
+    showToast("Type or paste at least one name");
+    return;
+  }
 
   setState((current) => ({
     ...current,
@@ -207,7 +247,209 @@ function removePlayer(playerId) {
   setState((current) => ({
     ...current,
     players: current.players.filter((player) => player.id !== playerId),
+    pairRequests: current.pairRequests.filter(
+      (pair) => pair.a !== playerId && pair.b !== playerId,
+    ),
   }));
+}
+
+function addPairRequest() {
+  const a = state.pairDraft.a;
+  const b = state.pairDraft.b;
+
+  if (!a || !b) {
+    showToast("Choose two players to pair");
+    return;
+  }
+
+  if (a === b) {
+    showToast("Choose two different players");
+    return;
+  }
+
+  const existing = state.pairRequests.find(
+    (pair) => pair.a === a || pair.b === a || pair.a === b || pair.b === b,
+  );
+
+  if (existing) {
+    showToast("Each player can have one requested partner");
+    return;
+  }
+
+  setState((current) => ({
+    ...current,
+    pairDraft: { ...defaultState.pairDraft },
+    pairRequests: [
+      ...current.pairRequests,
+      {
+        id: uid("pair"),
+        a,
+        b,
+      },
+    ],
+  }));
+  showToast(`${playerName(a)} and ${playerName(b)} paired`);
+}
+
+function removePairRequest(pairId) {
+  setState((current) => ({
+    ...current,
+    pairRequests: current.pairRequests.filter((pair) => pair.id !== pairId),
+  }));
+}
+
+function updatePairDraft(field, value) {
+  setState((current) => ({
+    ...current,
+    pairDraft: {
+      ...current.pairDraft,
+      [field]: value,
+    },
+  }));
+}
+
+function playerPower(player, stats) {
+  const record = stats[player.id];
+  const lastWeight = record.last === "win" ? 2 : record.last === "loss" ? 0 : 1;
+  return (record.wins - record.losses) * 4 + lastWeight - record.played * 0.1;
+}
+
+function unitRank(unit, stats) {
+  const records = unit.ids.map((id) => stats[id]);
+  const avg = (values) => values.reduce((total, value) => total + value, 0) / values.length;
+  return [
+    -Math.max(...records.map((record) => record.rests)),
+    avg(records.map((record) => record.played)),
+    avg(records.map((record) => record.wins - record.losses)),
+    unit.names,
+  ];
+}
+
+function compareUnitRank(a, b, stats) {
+  const left = unitRank(a, stats);
+  const right = unitRank(b, stats);
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] < right[index]) return -1;
+    if (left[index] > right[index]) return 1;
+  }
+  return 0;
+}
+
+function buildSelectionUnits(players, stats) {
+  const activeIds = new Set(players.map((player) => player.id));
+  const pairMap = activePairMap(activeIds);
+  const byId = new Map(players.map((player) => [player.id, player]));
+  const used = new Set();
+  const units = [];
+
+  const ordered = [...players].sort((a, b) => compareRank(a, b, rankForPlay, stats));
+
+  for (const player of ordered) {
+    if (used.has(player.id)) continue;
+
+    const partnerId = pairMap.get(player.id);
+    const partner = partnerId ? byId.get(partnerId) : null;
+
+    if (partner && !used.has(partner.id)) {
+      used.add(player.id);
+      used.add(partner.id);
+      units.push({
+        ids: [player.id, partner.id],
+        names: [player.name, partner.name].sort().join(" "),
+      });
+      continue;
+    }
+
+    used.add(player.id);
+    units.push({
+      ids: [player.id],
+      names: player.name,
+    });
+  }
+
+  return units.sort((a, b) => compareUnitRank(a, b, stats));
+}
+
+function canFillUnits(units, startIndex, target) {
+  if (target === 0) return true;
+  const possible = new Set([0]);
+
+  for (let index = startIndex; index < units.length; index += 1) {
+    const size = units[index].ids.length;
+    for (const value of [...possible]) {
+      const next = value + size;
+      if (next === target) return true;
+      if (next < target) possible.add(next);
+    }
+  }
+
+  return false;
+}
+
+function selectPlayersForRound(players, slots, stats) {
+  const byId = new Map(players.map((player) => [player.id, player]));
+  const units = buildSelectionUnits(players, stats);
+  const selectedIds = [];
+
+  for (let index = 0; index < units.length; index += 1) {
+    const unit = units[index];
+    const targetAfterUnit = slots - selectedIds.length - unit.ids.length;
+
+    if (targetAfterUnit >= 0 && canFillUnits(units, index + 1, targetAfterUnit)) {
+      selectedIds.push(...unit.ids);
+    }
+  }
+
+  if (selectedIds.length < slots) {
+    const ordered = [...players].sort((a, b) => compareRank(a, b, rankForPlay, stats));
+    for (const player of ordered) {
+      if (selectedIds.length >= slots) break;
+      if (!selectedIds.includes(player.id)) selectedIds.push(player.id);
+    }
+  }
+
+  return selectedIds.slice(0, slots).map((id) => byId.get(id)).filter(Boolean);
+}
+
+function makeTeams(selected, stats) {
+  const byId = new Map(selected.map((player) => [player.id, player]));
+  const selectedIds = new Set(selected.map((player) => player.id));
+  const pairMap = activePairMap(selectedIds);
+  const ordered = [...selected].sort((a, b) => compareRank(a, b, rankForCourt, stats));
+  const used = new Set();
+  const singles = [];
+  const teams = [];
+
+  for (const player of ordered) {
+    if (used.has(player.id)) continue;
+
+    const partnerId = pairMap.get(player.id);
+    const partner = partnerId ? byId.get(partnerId) : null;
+
+    if (partner && !used.has(partner.id)) {
+      used.add(player.id);
+      used.add(partner.id);
+      teams.push({
+        ids: [player.id, partner.id],
+        requested: true,
+        power: playerPower(player, stats) + playerPower(partner, stats),
+      });
+      continue;
+    }
+
+    used.add(player.id);
+    singles.push(player);
+  }
+
+  for (let left = 0, right = singles.length - 1; left < right; left += 1, right -= 1) {
+    teams.push({
+      ids: [singles[left].id, singles[right].id],
+      requested: false,
+      power: playerPower(singles[left], stats) + playerPower(singles[right], stats),
+    });
+  }
+
+  return teams.sort((a, b) => b.power - a.power);
 }
 
 function startRound() {
@@ -228,9 +470,7 @@ function startRound() {
   }
 
   const stats = computeStats();
-  const selected = [...players]
-    .sort((a, b) => compareRank(a, b, rankForPlay, stats))
-    .slice(0, slots);
+  const selected = selectPlayersForRound(players, slots, stats);
 
   const selectedIds = new Set(selected.map((player) => player.id));
   const restIds = players
@@ -238,16 +478,15 @@ function startRound() {
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((player) => player.id);
 
-  const courtOrdered = selected.sort((a, b) => compareRank(a, b, rankForCourt, stats));
+  const teams = makeTeams(selected, stats);
   const matches = [];
 
-  for (let index = 0; index < courtOrdered.length; index += 4) {
-    const group = courtOrdered.slice(index, index + 4);
+  for (let index = 0; index < teams.length; index += 2) {
     matches.push({
       id: uid("match"),
       court: matches.length + 1,
-      teamA: [group[0].id, group[3].id],
-      teamB: [group[1].id, group[2].id],
+      teamA: teams[index].ids,
+      teamB: teams[index + 1].ids,
       winner: null,
     });
   }
@@ -261,6 +500,7 @@ function startRound() {
         id: uid("round"),
         number: current.rounds.length + 1,
         createdAt: new Date().toISOString(),
+        completedAt: null,
         restIds,
         matches,
       },
@@ -269,15 +509,23 @@ function startRound() {
 }
 
 function recordWinner(matchId, winner) {
+  const completedAt = new Date().toISOString();
+
   setState((current) => ({
     ...current,
     rounds: current.rounds.map((round, roundIndex) => {
       if (roundIndex !== current.rounds.length - 1) return round;
+
+      const matches = round.matches.map((match) =>
+        match.id === matchId ? { ...match, winner } : match,
+      );
+
       return {
         ...round,
-        matches: round.matches.map((match) =>
-          match.id === matchId ? { ...match, winner } : match,
-        ),
+        matches,
+        completedAt: matches.every((match) => match.winner)
+          ? round.completedAt || completedAt
+          : null,
       };
     }),
   }));
@@ -295,9 +543,124 @@ function undoLastRound() {
   setState((current) => ({ ...current, rounds: current.rounds.slice(0, -1) }));
 }
 
-function clearEverything() {
-  if (!window.confirm("Clear players, courts, and rounds?")) return;
-  setState({ ...defaultState });
+function resetSession() {
+  const hasSessionData =
+    state.players.length || state.rounds.length || state.pairRequests.length || state.bulkDraft.trim();
+  if (!hasSessionData) {
+    showToast("Session is already empty");
+    return;
+  }
+
+  if (!window.confirm("Reset for a new day? This clears players and rounds.")) return;
+
+  setState((current) => ({
+    ...defaultState,
+    courtCount: current.courtCount,
+    schedule: current.schedule,
+  }));
+}
+
+function updateScheduleField(field, value) {
+  setState((current) => ({
+    ...current,
+    schedule: {
+      ...current.schedule,
+      [field]: value,
+    },
+  }));
+}
+
+function clampFallbackMinutes(value) {
+  return Math.max(5, Math.min(60, Number(value) || defaultState.schedule.fallbackMinutes));
+}
+
+function dateFromTime(value) {
+  const [hours, minutes] = String(value || "00:00")
+    .split(":")
+    .map((part) => Number(part));
+  const date = new Date();
+  date.setHours(Number.isFinite(hours) ? hours : 0, Number.isFinite(minutes) ? minutes : 0, 0, 0);
+  return date;
+}
+
+function scheduleWindow() {
+  const now = new Date();
+  const start = dateFromTime(state.schedule.startTime);
+  const end = dateFromTime(state.schedule.endTime);
+  if (end <= start) end.setDate(end.getDate() + 1);
+  if (now > end && state.schedule.endTime <= state.schedule.startTime) {
+    start.setDate(start.getDate() - 1);
+  }
+
+  const remainingMinutes = Math.max(0, (end.getTime() - now.getTime()) / 60000);
+  return { now, start, end, remainingMinutes };
+}
+
+function completedRoundDurations() {
+  return state.rounds
+    .filter((round) => roundComplete(round) && round.createdAt && round.completedAt)
+    .map((round) => {
+      const started = new Date(round.createdAt).getTime();
+      const finished = new Date(round.completedAt).getTime();
+      return Math.max(1, (finished - started) / 60000);
+    })
+    .filter((minutes) => Number.isFinite(minutes) && minutes > 0);
+}
+
+function computeForecast() {
+  const durations = completedRoundDurations();
+  const fallbackMinutes = clampFallbackMinutes(state.schedule.fallbackMinutes);
+  const averageMinutes = durations.length
+    ? durations.reduce((total, minutes) => total + minutes, 0) / durations.length
+    : fallbackMinutes;
+
+  const round = currentRound();
+  const activeCount = activePlayers().length;
+  const possibleCourts = Math.min(state.courtCount, Math.floor(activeCount / 4));
+  const courtGamesPerRound = round?.matches.length || possibleCourts;
+  const openGames = round && !roundComplete(round)
+    ? round.matches.filter((match) => !match.winner).length
+    : 0;
+  const { remainingMinutes, start, end } = scheduleWindow();
+  const futureWindow = openGames
+    ? Math.max(0, remainingMinutes - averageMinutes)
+    : remainingMinutes;
+  const futureRounds = courtGamesPerRound
+    ? Math.floor(futureWindow / averageMinutes)
+    : 0;
+  const gamesLeft = openGames + futureRounds * courtGamesPerRound;
+
+  return {
+    averageMinutes,
+    durationCount: durations.length,
+    remainingMinutes,
+    futureRounds,
+    gamesLeft,
+    openGames,
+    courtGamesPerRound,
+    start,
+    end,
+    source: durations.length ? "from completed rounds" : "starting estimate",
+  };
+}
+
+function formatMinutes(value) {
+  if (!Number.isFinite(value)) return "-";
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded < 60) return `${rounded} min`;
+  const hours = Math.floor(rounded / 60);
+  const minutes = rounded % 60;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function formatTime(date) {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function roundDurationLabel(round) {
+  if (!round.completedAt) return "in progress";
+  const minutes = (new Date(round.completedAt).getTime() - new Date(round.createdAt).getTime()) / 60000;
+  return formatMinutes(minutes);
 }
 
 function render() {
@@ -308,13 +671,19 @@ function render() {
   app.innerHTML = `
     <header class="topbar">
       <div class="brand-row">
-        <div class="brand">
-          <h1 class="brand-title">Pickleball Court Stack</h1>
-          <p class="brand-subtitle">${state.courtCount} court${state.courtCount === 1 ? "" : "s"} · ${state.rounds.length} round${state.rounds.length === 1 ? "" : "s"}</p>
+        <div class="brand-lockup">
+          <img class="brand-icon" src="./icon.svg" alt="" />
+          <div class="brand">
+            <h1 class="brand-title">Pickleball Court Stack</h1>
+            <p class="brand-subtitle">${state.courtCount} court${state.courtCount === 1 ? "" : "s"} - ${state.rounds.length} round${state.rounds.length === 1 ? "" : "s"}</p>
+          </div>
         </div>
-        <div class="session-pill">
-          <strong>${activeCount}</strong>
-          <span>active</span>
+        <div class="top-actions">
+          <div class="session-pill">
+            <strong>${activeCount}</strong>
+            <span>active</span>
+          </div>
+          <button class="secondary compact" id="reset-session" type="button">Reset Day</button>
         </div>
       </div>
       <nav class="tabs" aria-label="App sections">
@@ -346,26 +715,15 @@ function renderPlayers(stats) {
   const players = [...state.players].sort((a, b) => a.name.localeCompare(b.name));
 
   return `
-    <section class="panel">
+    <section class="panel hero-panel">
       <div class="section-head">
-        <h2>Players</h2>
+        <h2>Add Players</h2>
         <span class="small">${state.players.length} total</span>
       </div>
-      <form class="input-row" id="add-player-form">
-        <input class="name-input" id="player-name" autocomplete="off" placeholder="Player name" value="${escapeHtml(state.playerDraft)}" />
-        <button class="primary" type="submit">Add</button>
-      </form>
-    </section>
-
-    <section class="panel">
-      <div class="section-head">
-        <h3>Paste List</h3>
-        <span class="small">comma or line break</span>
-      </div>
-      <textarea class="bulk-input" id="bulk-names" placeholder="Ana&#10;Ben&#10;Carlo">${escapeHtml(state.bulkDraft)}</textarea>
-      <div class="actions">
-        <button class="secondary" id="add-bulk" type="button">Add Names</button>
-        <button class="danger" id="clear-everything" type="button">Clear All</button>
+      <textarea class="bulk-input roster-input" id="bulk-names" placeholder="Ana&#10;Ben&#10;Carlo">${escapeHtml(state.bulkDraft)}</textarea>
+      <div class="actions split-actions">
+        <button class="primary" id="add-bulk" type="button">Add to Roster</button>
+        <button class="danger" id="reset-session-secondary" type="button">Reset Day</button>
       </div>
     </section>
 
@@ -382,10 +740,13 @@ function renderPlayers(stats) {
         }
       </div>
     </section>
+
+    ${renderPairRequests(players)}
   `;
 }
 
 function renderPlayer(player, record) {
+  const partnerId = partnerForPlayer(player.id);
   return `
     <article class="player-row">
       <div class="player-main">
@@ -395,20 +756,79 @@ function renderPlayer(player, record) {
           <span class="badge win">${record.wins} win${record.wins === 1 ? "" : "s"}</span>
           <span class="badge loss">${record.losses} loss${record.losses === 1 ? "" : "es"}</span>
           <span class="badge rest">${record.rests} rest${record.rests === 1 ? "" : "s"}</span>
+          ${partnerId ? `<span class="badge partner">with ${escapeHtml(playerName(partnerId))}</span>` : ""}
           ${player.active ? "" : `<span class="badge">inactive</span>`}
         </div>
       </div>
       <div class="player-actions">
         <button class="mini-button" data-toggle-player="${player.id}" type="button">${player.active ? "Off" : "On"}</button>
-        <button class="mini-button" data-remove-player="${player.id}" type="button">X</button>
+        <button class="mini-button danger-mini" data-remove-player="${player.id}" type="button">X</button>
       </div>
     </article>
   `;
 }
 
+function renderPairRequests(players) {
+  const selectablePlayers = players.filter((player) => player.active);
+  return `
+    <section class="panel partner-panel">
+      <div class="section-head">
+        <h3>Partner Requests</h3>
+        <span class="small">${state.pairRequests.length} pair${state.pairRequests.length === 1 ? "" : "s"}</span>
+      </div>
+      ${
+        selectablePlayers.length >= 2
+          ? `
+            <div class="pair-form">
+              <select class="select-input" id="pair-a" aria-label="First partner">
+                <option value="">Player 1</option>
+                ${renderPlayerOptions(selectablePlayers, state.pairDraft.a)}
+              </select>
+              <select class="select-input" id="pair-b" aria-label="Second partner">
+                <option value="">Player 2</option>
+                ${renderPlayerOptions(selectablePlayers, state.pairDraft.b)}
+              </select>
+              <button class="secondary" id="add-pair" type="button">Pair Together</button>
+            </div>
+          `
+          : `<div class="empty-state">Add at least 2 active players to set partner requests</div>`
+      }
+      <div class="pair-list">
+        ${
+          state.pairRequests.length
+            ? state.pairRequests.map((pair) => renderPairRequest(pair)).join("")
+            : `<div class="subtle-note">Requested partners are kept together when both players are active and selected for the round.</div>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function renderPlayerOptions(players, selectedId) {
+  return players
+    .map(
+      (player) =>
+        `<option value="${player.id}" ${player.id === selectedId ? "selected" : ""}>${escapeHtml(player.name)}</option>`,
+    )
+    .join("");
+}
+
+function renderPairRequest(pair) {
+  return `
+    <div class="pair-row">
+      <span>${escapeHtml(playerName(pair.a))}</span>
+      <strong>+</strong>
+      <span>${escapeHtml(playerName(pair.b))}</span>
+      <button class="mini-button danger-mini" data-remove-pair="${pair.id}" type="button">X</button>
+    </div>
+  `;
+}
+
 function renderCourts(stats, round) {
   return `
-    <section class="panel">
+    ${renderSchedule()}
+
+    <section class="panel court-control-panel">
       <div class="section-head">
         <h2>Courts</h2>
         <span class="small">${Math.max(0, state.courtCount * 4)} slots</span>
@@ -424,7 +844,7 @@ function renderCourts(stats, round) {
       <div class="round-header">
         <div class="round-title">
           <h2>${round ? `Round ${round.number}` : "No Active Round"}</h2>
-          <span>${round ? `${round.matches.length} court${round.matches.length === 1 ? "" : "s"}` : `${activePlayers().length} active players`}</span>
+          <span>${round ? `${round.matches.length} court game${round.matches.length === 1 ? "" : "s"}` : `${activePlayers().length} active players`}</span>
         </div>
         <div class="actions">
           <button class="primary" id="start-round" type="button">${round && roundComplete(round) ? "Next Round" : "Start Round"}</button>
@@ -435,6 +855,38 @@ function renderCourts(stats, round) {
     </section>
 
     ${round ? renderRound(round, stats) : renderNoRound()}
+  `;
+}
+
+function renderSchedule() {
+  const forecast = computeForecast();
+  return `
+    <section class="panel schedule-panel">
+      <div class="section-head">
+        <h2>Schedule</h2>
+        <span class="small">${formatTime(forecast.start)} to ${formatTime(forecast.end)}</span>
+      </div>
+      <div class="schedule-form">
+        <label class="field">
+          <span>Start</span>
+          <input class="time-input" id="schedule-start" type="time" value="${escapeHtml(state.schedule.startTime)}" />
+        </label>
+        <label class="field">
+          <span>End</span>
+          <input class="time-input" id="schedule-end" type="time" value="${escapeHtml(state.schedule.endTime)}" />
+        </label>
+        <label class="field">
+          <span>Estimate</span>
+          <input class="time-input" id="fallback-minutes" type="number" min="5" max="60" value="${clampFallbackMinutes(state.schedule.fallbackMinutes)}" />
+        </label>
+      </div>
+      <div class="forecast-grid">
+        ${summaryStat("Avg round", formatMinutes(forecast.averageMinutes), "teal", forecast.source)}
+        ${summaryStat("Time left", formatMinutes(forecast.remainingMinutes), "blue", "until scheduled end")}
+        ${summaryStat("Games left", forecast.gamesLeft, "amber", `${forecast.openGames} open now`)}
+        ${summaryStat("Future rounds", forecast.futureRounds, "coral", `${forecast.courtGamesPerRound || 0} games per round`)}
+      </div>
+    </section>
   `;
 }
 
@@ -468,10 +920,10 @@ function renderRound(round, stats) {
     </section>
     <section class="panel">
       <div class="stats-grid">
-        ${summaryStat("Played", Object.values(stats).reduce((sum, record) => sum + record.played, 0))}
-        ${summaryStat("Wins", Object.values(stats).reduce((sum, record) => sum + record.wins, 0))}
-        ${summaryStat("Rests", Object.values(stats).reduce((sum, record) => sum + record.rests, 0))}
-        ${summaryStat("Open", round.matches.filter((match) => !match.winner).length)}
+        ${summaryStat("Played", Object.values(stats).reduce((sum, record) => sum + record.played, 0), "blue")}
+        ${summaryStat("Wins", Object.values(stats).reduce((sum, record) => sum + record.wins, 0), "teal")}
+        ${summaryStat("Rests", Object.values(stats).reduce((sum, record) => sum + record.rests, 0), "amber")}
+        ${summaryStat("Open", round.matches.filter((match) => !match.winner).length, "coral")}
       </div>
     </section>
   `;
@@ -507,11 +959,12 @@ function renderTeam(match, teamKey, playerIds) {
   `;
 }
 
-function summaryStat(label, value) {
+function summaryStat(label, value, tone = "", note = "") {
   return `
-    <div class="stat">
-      <strong>${value}</strong>
-      <span>${label}</span>
+    <div class="stat ${tone ? `stat-${tone}` : ""}">
+      <strong>${escapeHtml(value)}</strong>
+      <span>${escapeHtml(label)}</span>
+      ${note ? `<small>${escapeHtml(note)}</small>` : ""}
     </div>
   `;
 }
@@ -537,7 +990,10 @@ function renderHistory() {
 function renderHistoryRound(round) {
   return `
     <article class="history-card">
-      <h3>Round ${round.number}</h3>
+      <div class="history-head">
+        <h3>Round ${round.number}</h3>
+        <span>${roundDurationLabel(round)}</span>
+      </div>
       <div class="history-matches">
         ${round.matches.map((match) => renderHistoryMatch(match)).join("")}
         <div class="history-line">Rest: ${
@@ -554,7 +1010,7 @@ function renderHistoryMatch(match) {
   const winner = match.winner ? `Team ${match.winner}` : "open";
   return `
     <div class="history-line">
-      Court ${match.court}: ${escapeHtml(teamA)} vs ${escapeHtml(teamB)} · ${winner}
+      Court ${match.court}: ${escapeHtml(teamA)} vs ${escapeHtml(teamB)} - ${winner}
     </div>
   `;
 }
@@ -563,22 +1019,6 @@ function bindEvents() {
   app.querySelectorAll("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => setState({ tab: button.dataset.tab }));
   });
-
-  const playerForm = app.querySelector("#add-player-form");
-  if (playerForm) {
-    playerForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      addPlayer(state.playerDraft);
-    });
-  }
-
-  const playerInput = app.querySelector("#player-name");
-  if (playerInput) {
-    playerInput.addEventListener("input", (event) => {
-      state.playerDraft = event.target.value;
-      saveState();
-    });
-  }
 
   const bulkInput = app.querySelector("#bulk-names");
   if (bulkInput) {
@@ -591,8 +1031,25 @@ function bindEvents() {
   const addBulk = app.querySelector("#add-bulk");
   if (addBulk) addBulk.addEventListener("click", addBulkPlayers);
 
-  const clearEverythingButton = app.querySelector("#clear-everything");
-  if (clearEverythingButton) clearEverythingButton.addEventListener("click", clearEverything);
+  const resetButtons = app.querySelectorAll("#reset-session, #reset-session-secondary");
+  resetButtons.forEach((button) => button.addEventListener("click", resetSession));
+
+  const pairA = app.querySelector("#pair-a");
+  if (pairA) {
+    pairA.addEventListener("change", (event) => updatePairDraft("a", event.target.value));
+  }
+
+  const pairB = app.querySelector("#pair-b");
+  if (pairB) {
+    pairB.addEventListener("change", (event) => updatePairDraft("b", event.target.value));
+  }
+
+  const addPair = app.querySelector("#add-pair");
+  if (addPair) addPair.addEventListener("click", addPairRequest);
+
+  app.querySelectorAll("[data-remove-pair]").forEach((button) => {
+    button.addEventListener("click", () => removePairRequest(button.dataset.removePair));
+  });
 
   app.querySelectorAll("[data-toggle-player]").forEach((button) => {
     button.addEventListener("click", () => togglePlayer(button.dataset.togglePlayer));
@@ -621,6 +1078,27 @@ function bindEvents() {
   if (courtPlus) {
     courtPlus.addEventListener("click", () =>
       setState((current) => ({ ...current, courtCount: Math.min(12, current.courtCount + 1) })),
+    );
+  }
+
+  const scheduleStart = app.querySelector("#schedule-start");
+  if (scheduleStart) {
+    scheduleStart.addEventListener("change", (event) =>
+      updateScheduleField("startTime", event.target.value || defaultState.schedule.startTime),
+    );
+  }
+
+  const scheduleEnd = app.querySelector("#schedule-end");
+  if (scheduleEnd) {
+    scheduleEnd.addEventListener("change", (event) =>
+      updateScheduleField("endTime", event.target.value || defaultState.schedule.endTime),
+    );
+  }
+
+  const fallbackMinutes = app.querySelector("#fallback-minutes");
+  if (fallbackMinutes) {
+    fallbackMinutes.addEventListener("change", (event) =>
+      updateScheduleField("fallbackMinutes", clampFallbackMinutes(event.target.value)),
     );
   }
 
