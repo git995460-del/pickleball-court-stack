@@ -1157,6 +1157,7 @@ function renderPlayers(stats) {
 }
 
 function renderUpNext(stats) {
+  const round = currentRound();
   const plan = buildUpNextPlan(stats);
 
   return `
