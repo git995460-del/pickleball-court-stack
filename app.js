@@ -379,6 +379,25 @@ function removePlayer(playerId) {
   }));
 }
 
+function deleteAllPlayers() {
+  if (!state.players.length) {
+    showToast("Roster is already empty");
+    return;
+  }
+
+  if (!window.confirm("Delete all players from the roster? This also clears games and partner pairs.")) {
+    return;
+  }
+
+  setState((current) => ({
+    ...defaultState,
+    tab: "players",
+    courtCount: current.courtCount,
+    schedule: current.schedule,
+  }));
+  showToast("Roster deleted");
+}
+
 function addPairRequest() {
   const a = state.pairDraft.a;
   const b = state.pairDraft.b;
@@ -1124,7 +1143,10 @@ function renderPlayers(stats) {
     <section class="panel">
       <div class="section-head">
         <h3>Roster</h3>
-        <span class="small">${activePlayers().length} active</span>
+        <div class="section-actions">
+          <span class="small">${activePlayers().length} active</span>
+          <button class="danger compact" id="delete-all-players" type="button" ${state.players.length ? "" : "disabled"}>Delete All</button>
+        </div>
       </div>
       <div class="player-list">
         ${
@@ -1530,6 +1552,9 @@ function bindEvents() {
 
   const resetButtons = app.querySelectorAll("#reset-session, #reset-session-secondary");
   resetButtons.forEach((button) => button.addEventListener("click", resetSession));
+
+  const deleteAllPlayersButton = app.querySelector("#delete-all-players");
+  if (deleteAllPlayersButton) deleteAllPlayersButton.addEventListener("click", deleteAllPlayers);
 
   const addPair = app.querySelector("#add-pair");
   if (addPair) addPair.addEventListener("click", addPairRequest);
