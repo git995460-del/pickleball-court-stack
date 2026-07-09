@@ -352,6 +352,19 @@ function completedMatches(round) {
   return [...(round?.completedMatches || []), ...(round?.matches || []).filter((match) => match.winner)];
 }
 
+function matchPlayerIds(match) {
+  return match ? [...(match.teamA || []), ...(match.teamB || [])] : [];
+}
+
+function latestCompletedMatch(round) {
+  const matches = completedMatches(round).filter((match) => match.completedAt);
+  return matches[matches.length - 1] || null;
+}
+
+function latestCompletedPlayerIds(round) {
+  return new Set(matchPlayerIds(latestCompletedMatch(round)));
+}
+
 function activePlayerIdsOnCourts(round, exceptMatchId = "") {
   const ids = new Set();
 
@@ -769,7 +782,14 @@ function teamsToMatches(teams, options = {}) {
 }
 
 function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set(), options = {}) {
-  const availablePlayers = activePlayersFrom(appState).filter((player) => !excludedIds.has(player.id));
+  const avoidIds = options.avoidIds || new Set();
+  const eligiblePlayers = activePlayersFrom(appState).filter((player) => !excludedIds.has(player.id));
+  const restedPlayers = eligiblePlayers.filter((player) => !avoidIds.has(player.id));
+  const availablePlayers = restedPlayers.length >= 4
+    ? restedPlayers
+    : options.strictAvoid
+      ? []
+      : eligiblePlayers;
   if (availablePlayers.length < 4) return null;
 
   const selectionOptions = { ...options, appState };
@@ -795,6 +815,7 @@ function buildUpNextPlan(stats) {
     partnerPairs: round.partnerPairs || [],
   };
   const matches = [];
+  const avoidIds = latestCompletedPlayerIds(simRound);
   let restIds = waitingPlayerIds(simRound);
 
   while (matches.length < targetMatches) {
@@ -814,6 +835,7 @@ function buildUpNextPlan(stats) {
       matches.length + 1,
       stats,
       activePlayerIdsOnCourts(simRound),
+      { avoidIds, strictAvoid: avoidIds.size > 0 },
     );
 
     if (!nextMatch) break;
@@ -910,7 +932,9 @@ function recordWinner(matchId, winner) {
     };
     const statsAfterResult = computeStatsFor(tempState);
     const busyIds = activePlayerIdsOnCourts(baseRound);
-    const nextMatch = buildCourtMatchFromState(tempState, match.court, statsAfterResult, busyIds);
+    const nextMatch = buildCourtMatchFromState(tempState, match.court, statsAfterResult, busyIds, {
+      avoidIds: new Set(matchPlayerIds(completedMatch)),
+    });
     const nextMatches = nextMatch ? [...remainingMatches, nextMatch] : remainingMatches;
     const nextPartnerPairs = nextMatch ? partnerPairsFromMatches([nextMatch]) : [];
     const partnerPairs = nextMatch
