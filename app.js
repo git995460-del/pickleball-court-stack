@@ -125,25 +125,36 @@ function playersById() {
 }
 
 function sessionPartnerPairs() {
-  const round = currentRound();
+  return sessionPartnerPairsFrom(state);
+}
+
+function sessionPartnerPairsFrom(appState) {
+  const round = appState.rounds?.[appState.rounds.length - 1] || null;
   return Array.isArray(round?.partnerPairs) ? round.partnerPairs : [];
 }
 
 function pairSources(options = {}) {
+  const appState = options.appState || state;
+  const sessionPairs = Object.prototype.hasOwnProperty.call(options, "partnerPairs")
+    ? options.partnerPairs
+    : sessionPartnerPairsFrom(appState);
+
   return [
-    ...(options.includeSessionPairs === false ? [] : sessionPartnerPairs()),
-    ...state.pairRequests,
+    ...(options.includeSessionPairs === false ? [] : sessionPairs),
+    ...(Array.isArray(options.pairRequests) ? options.pairRequests : appState.pairRequests || []),
   ];
 }
 
 function activePairMap(
-  playerIds = new Set(activePlayers().map((player) => player.id)),
+  playerIds = null,
   options = {},
 ) {
+  const appState = options.appState || state;
+  const scopedPlayerIds = playerIds || new Set(activePlayersFrom(appState).map((player) => player.id));
   const map = new Map();
 
   for (const pair of pairSources(options)) {
-    if (!playerIds.has(pair.a) || !playerIds.has(pair.b)) continue;
+    if (!scopedPlayerIds.has(pair.a) || !scopedPlayerIds.has(pair.b)) continue;
     if (map.has(pair.a) || map.has(pair.b)) continue;
     map.set(pair.a, pair.b);
     map.set(pair.b, pair.a);
@@ -555,10 +566,14 @@ function playerPower(player, stats) {
 function unitRank(unit, stats) {
   const records = unit.ids.map((id) => stats[id]);
   const avg = (values) => values.reduce((total, value) => total + value, 0) / values.length;
+  const played = records.map((record) => record.played);
+  const rests = records.map((record) => record.rests);
+
   return [
-    avg(records.map((record) => record.played)),
-    -Math.max(...records.map((record) => record.rests)),
-    -avg(records.map((record) => record.rests)),
+    Math.min(...played),
+    avg(played),
+    -Math.max(...rests),
+    -avg(rests),
     avg(records.map((record) => record.wins - record.losses)),
     unit.names,
   ];
@@ -757,10 +772,11 @@ function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set(
   const availablePlayers = activePlayersFrom(appState).filter((player) => !excludedIds.has(player.id));
   if (availablePlayers.length < 4) return null;
 
-  const selected = selectPlayersForRound(availablePlayers, 4, stats, options);
+  const selectionOptions = { ...options, appState };
+  const selected = selectPlayersForRound(availablePlayers, 4, stats, selectionOptions);
   if (selected.length < 4) return null;
 
-  const teams = makeTeams(selected, stats, options);
+  const teams = makeTeams(selected, stats, selectionOptions);
   return teamsToMatches(teams, {
     courtStart: court,
     startedAt: new Date().toISOString(),
