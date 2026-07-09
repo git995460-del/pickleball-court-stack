@@ -480,6 +480,74 @@ button:disabled {
   line-height: 1.45;
 }
 
+.up-next-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.up-next-card {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.up-next-court {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.up-next-court strong {
+  font-size: 0.92rem;
+}
+
+.up-next-court span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.up-next-teams {
+  display: grid;
+  gap: 6px;
+}
+
+.up-next-teams span {
+  overflow-wrap: anywhere;
+  font-weight: 850;
+}
+
+.up-next-teams em {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.up-next-rest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.up-next-rest strong {
+  border-radius: 999px;
+  background: var(--amber-soft);
+  color: #76520c;
+  padding: 4px 8px;
+}
+
 .pair-builder {
   display: grid;
   gap: 8px;
@@ -843,7 +911,8 @@ button:disabled {
   }
 
   .court-list,
-  .history-list {
+  .history-list,
+  .up-next-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

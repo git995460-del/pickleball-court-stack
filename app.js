@@ -487,36 +487,39 @@ function makeTeams(selected, stats) {
   return teams.sort((a, b) => b.power - a.power);
 }
 
-function startRound() {
-  const lastRound = currentRound();
-  if (lastRound && !roundComplete(lastRound)) {
-    showToast("Finish the current round first");
-    return;
-  }
-
+function buildRoundPlan(stats = computeStats()) {
   const players = activePlayers();
   const maxSlots = Math.max(0, Math.floor(players.length / 4) * 4);
   const slots = Math.min(state.courtCount * 4, maxSlots);
 
   if (slots < 4) {
-    showToast("At least 4 active players are needed");
-    setState({ tab: "players" });
-    return;
+    return {
+      matches: [],
+      restIds: players.map((player) => player.id),
+      slots,
+    };
   }
 
-  const stats = computeStats();
   const selected = selectPlayersForRound(players, slots, stats);
-
   const selectedIds = new Set(selected.map((player) => player.id));
   const restIds = players
     .filter((player) => !selectedIds.has(player.id))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((player) => player.id);
-
   const teams = makeTeams(selected, stats);
+
+  return {
+    matches: teamsToMatches(teams),
+    restIds,
+    slots,
+  };
+}
+
+function teamsToMatches(teams) {
   const matches = [];
 
   for (let index = 0; index < teams.length; index += 2) {
+    if (!teams[index] || !teams[index + 1]) continue;
     matches.push({
       id: uid("match"),
       court: matches.length + 1,
@@ -524,6 +527,24 @@ function startRound() {
       teamB: teams[index + 1].ids,
       winner: null,
     });
+  }
+
+  return matches;
+}
+
+function startRound() {
+  const lastRound = currentRound();
+  if (lastRound && !roundComplete(lastRound)) {
+    showToast("Finish the current round first");
+    return;
+  }
+
+  const plan = buildRoundPlan();
+
+  if (plan.slots < 4) {
+    showToast("At least 4 active players are needed");
+    setState({ tab: "players" });
+    return;
   }
 
   setState((current) => ({
@@ -536,8 +557,8 @@ function startRound() {
         number: current.rounds.length + 1,
         createdAt: new Date().toISOString(),
         completedAt: null,
-        restIds,
-        matches,
+        restIds: plan.restIds,
+        matches: plan.matches,
       },
     ],
   }));
@@ -759,6 +780,8 @@ function renderPlayers(stats) {
   return `
     ${renderSchedule()}
 
+    ${renderUpNext(stats)}
+
     <section class="panel hero-panel">
       <div class="section-head">
         <h2>Add Players</h2>
@@ -786,6 +809,54 @@ function renderPlayers(stats) {
         }
       </div>
     </section>
+  `;
+}
+
+function renderUpNext(stats) {
+  const round = currentRound();
+  const waitingForResults = round && !roundComplete(round);
+  const plan = buildRoundPlan(stats);
+
+  return `
+    <section class="panel up-next-panel">
+      <div class="section-head">
+        <h2>Up Next</h2>
+        <span class="small">${plan.matches.length ? `${plan.matches.length} projected` : "not ready"}</span>
+      </div>
+      <div class="subtle-note">
+        ${waitingForResults
+          ? "Projected from results entered so far. Final order can change until every current court has a winner."
+          : "Projected court numbers are a guide. If a different court opens first, move the next game to the first open court."}
+      </div>
+      ${
+        plan.matches.length
+          ? `<div class="up-next-list">${plan.matches.map((match) => renderUpNextMatch(match)).join("")}</div>`
+          : `<div class="empty-state">Add at least 4 active players to see who plays next</div>`
+      }
+      ${
+        plan.restIds.length
+          ? `<div class="up-next-rest"><span>Projected rest:</span> ${plan.restIds
+              .map((id) => `<strong>${escapeHtml(playerName(id))}</strong>`)
+              .join("")}</div>`
+          : ""
+      }
+    </section>
+  `;
+}
+
+function renderUpNextMatch(match) {
+  return `
+    <article class="up-next-card">
+      <div class="up-next-court">
+        <strong>Projected Court ${match.court}</strong>
+        <span>or first open court</span>
+      </div>
+      <div class="up-next-teams">
+        <span>${match.teamA.map((id) => escapeHtml(playerName(id))).join(" / ")}</span>
+        <em>vs</em>
+        <span>${match.teamB.map((id) => escapeHtml(playerName(id))).join(" / ")}</span>
+      </div>
+    </article>
   `;
 }
 
