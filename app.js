@@ -210,6 +210,39 @@ function partnerPairsFromMatches(matches) {
   return partnerPairsFromTeams(teams);
 }
 
+function activeUnpairedPlayerIds(appState, round, partnerPairs = []) {
+  const busyIds = activePlayerIdsOnCourts(round);
+  const activeIds = new Set(activePlayersFrom(appState).map((player) => player.id));
+  const coveredIds = new Set();
+
+  for (const pair of [...(partnerPairs || []), ...(appState.pairRequests || [])]) {
+    if (!activeIds.has(pair.a) || !activeIds.has(pair.b)) continue;
+    if (coveredIds.has(pair.a) || coveredIds.has(pair.b)) continue;
+    coveredIds.add(pair.a);
+    coveredIds.add(pair.b);
+  }
+
+  return activePlayersFrom(appState)
+    .filter((player) => !busyIds.has(player.id) && !coveredIds.has(player.id))
+    .map((player) => player.id);
+}
+
+function flexLosingPairForOddRoster(partnerPairs, appState, round, loserIds) {
+  const pairs = partnerPairs || [];
+  if (!Array.isArray(loserIds) || loserIds.length !== 2) return pairs;
+  if (activePlayersFrom(appState).length % 2 === 0) return pairs;
+
+  const loserKey = pairKey({ a: loserIds[0], b: loserIds[1] });
+  if ((appState.pairRequests || []).some((pair) => pairKey(pair) === loserKey)) return pairs;
+  if (!pairs.some((pair) => pairKey(pair) === loserKey)) return pairs;
+
+  const hasWaitingUnpairedPlayer = activeUnpairedPlayerIds(appState, round, pairs).some(
+    (playerId) => !loserIds.includes(playerId),
+  );
+
+  return hasWaitingUnpairedPlayer ? pairs.filter((pair) => pairKey(pair) !== loserKey) : pairs;
+}
+
 function computeStats() {
   return computeStatsFor(state);
 }
@@ -835,14 +868,25 @@ function recordWinner(matchId, winner) {
       winner,
       completedAt,
     };
+    const loserIds = winner === "A" ? match.teamB : match.teamA;
 
     const remainingMatches = activeMatches(round).filter((item) => item.id !== matchId);
-    const baseRound = {
+    const roundAfterResult = {
       ...round,
       completedAt: null,
       completedMatches: [...(round.completedMatches || []), completedMatch],
       matches: remainingMatches,
       partnerPairs: round.partnerPairs || [],
+    };
+    const partnerPairsAfterResult = flexLosingPairForOddRoster(
+      round.partnerPairs || [],
+      current,
+      roundAfterResult,
+      loserIds,
+    );
+    const baseRound = {
+      ...roundAfterResult,
+      partnerPairs: partnerPairsAfterResult,
     };
     const tempState = {
       ...current,
