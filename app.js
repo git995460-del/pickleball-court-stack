@@ -715,6 +715,76 @@ function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set(
   })[0] || null;
 }
 
+function sortMatchesByLikelyFinish(matches) {
+  return [...matches].sort((a, b) => {
+    const left = new Date(a.startedAt || 0).getTime();
+    const right = new Date(b.startedAt || 0).getTime();
+    return left - right;
+  });
+}
+
+function buildUpNextPlan(stats) {
+  const round = currentRound();
+  const targetMatches = Math.max(1, state.courtCount > 2 ? state.courtCount - 1 : 1);
+  if (!round) return buildRoundPlan(stats, { maxMatches: targetMatches });
+
+  const simRound = {
+    ...round,
+    matches: activeMatches(round),
+    completedMatches: completedMatches(round),
+    partnerPairs: round.partnerPairs || [],
+  };
+  const matches = [];
+  let restIds = waitingPlayerIds(simRound);
+
+  while (matches.length < targetMatches) {
+    let busyIds = activePlayerIdsOnCourts(simRound);
+    let availableCount = activePlayers().filter((player) => !busyIds.has(player.id)).length;
+
+    if (availableCount < 4) {
+      const finishCandidates = sortMatchesByLikelyFinish(simRound.matches).filter(
+        (match) => !matches.some((queued) => queued.id === match.id),
+      );
+      const freeingMatch = finishCandidates[0];
+      if (!freeingMatch) break;
+      simRound.matches = simRound.matches.filter((match) => match.id !== freeingMatch.id);
+      busyIds = activePlayerIdsOnCourts(simRound);
+      availableCount = activePlayers().filter((player) => !busyIds.has(player.id)).length;
+    }
+
+    if (availableCount < 4) break;
+
+    const simState = {
+      ...state,
+      rounds: state.rounds.map((item, index) =>
+        index === state.rounds.length - 1 ? simRound : item,
+      ),
+    };
+    const nextMatch = buildCourtMatchFromState(
+      simState,
+      matches.length + 1,
+      stats,
+      activePlayerIdsOnCourts(simRound),
+    );
+
+    if (!nextMatch) break;
+
+    matches.push(nextMatch);
+    simRound.matches = [...simRound.matches, nextMatch];
+    simRound.partnerPairs = appendPartnerPairs(
+      simRound.partnerPairs,
+      partnerPairsFromMatches([nextMatch]),
+    );
+    restIds = waitingPlayerIdsFor(simState, simRound);
+  }
+
+  return {
+    matches,
+    restIds,
+    slots: matches.length * 4,
+  };
+}
+
 function startRound() {
   if (state.rounds.length) {
     showToast("Reset Day before starting a new session");
@@ -1087,11 +1157,7 @@ function renderPlayers(stats) {
 }
 
 function renderUpNext(stats) {
-  const round = currentRound();
-  const excludedIds = round ? activePlayerIdsOnCourts(round) : new Set();
-  const plan = buildRoundPlan(stats, {
-    excludedIds,
-  });
+  const plan = buildUpNextPlan(stats);
 
   return `
     <section class="panel up-next-panel">
