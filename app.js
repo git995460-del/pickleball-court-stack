@@ -14,6 +14,9 @@ const defaultState = {
     a: "",
     b: "",
   },
+  assignmentDraft: null,
+  editingMatchId: "",
+  matchEditDraft: null,
   rounds: [],
   bulkDraft: "",
   toast: "",
@@ -43,6 +46,9 @@ function loadState() {
         ...defaultState.pairDraft,
         ...(saved.pairDraft || {}),
       },
+      assignmentDraft: saved.assignmentDraft || null,
+      editingMatchId: "",
+      matchEditDraft: null,
       rounds: Array.isArray(saved.rounds)
         ? saved.rounds.map((round) => ({
             ...round,
@@ -388,6 +394,138 @@ function waitingPlayerIdsFor(appState, round) {
 
 function waitingPlayerIds(round) {
   return waitingPlayerIdsFor(state, round);
+}
+
+function activeRosterFingerprint(appState = state) {
+  return [
+    appState.courtCount,
+    ...activePlayersFrom(appState)
+      .map((player) => player.id)
+      .sort(),
+  ].join("|");
+}
+
+function cloneStartAssignmentDraft(draft) {
+  if (!draft || !Array.isArray(draft.matches)) return null;
+
+  return {
+    fingerprint: draft.fingerprint || activeRosterFingerprint(),
+    matches: draft.matches.map((match) => ({
+      court: Number(match.court) || 1,
+      teamA: Array.isArray(match.teamA) ? match.teamA.slice(0, 2) : ["", ""],
+      teamB: Array.isArray(match.teamB) ? match.teamB.slice(0, 2) : ["", ""],
+    })),
+  };
+}
+
+function startAssignmentDraftFromPlan(stats = computeStats()) {
+  const plan = buildRoundPlan(stats);
+  return {
+    fingerprint: activeRosterFingerprint(),
+    matches: plan.matches.map((match) => ({
+      court: match.court,
+      teamA: [...match.teamA],
+      teamB: [...match.teamB],
+    })),
+  };
+}
+
+function emptyStartAssignmentDraft(stats = computeStats()) {
+  const matchCount = Math.min(state.courtCount, Math.floor(activePlayers().length / 4));
+  const autoDraft = startAssignmentDraftFromPlan(stats);
+  return {
+    fingerprint: activeRosterFingerprint(),
+    matches: Array.from({ length: matchCount }, (_, index) => ({
+      court: autoDraft.matches[index]?.court || index + 1,
+      teamA: ["", ""],
+      teamB: ["", ""],
+    })),
+  };
+}
+
+function startingAssignmentDraft(stats = computeStats()) {
+  const fingerprint = activeRosterFingerprint();
+  const savedDraft = cloneStartAssignmentDraft(state.assignmentDraft);
+  const expectedMatches = Math.min(state.courtCount, Math.floor(activePlayers().length / 4));
+
+  if (
+    savedDraft &&
+    savedDraft.fingerprint === fingerprint &&
+    savedDraft.matches.length === expectedMatches
+  ) {
+    return savedDraft;
+  }
+
+  return startAssignmentDraftFromPlan(stats);
+}
+
+function startAssignmentMatches(stats = computeStats()) {
+  return startingAssignmentDraft(stats).matches;
+}
+
+function assignmentPlayerIds(matches) {
+  return (matches || []).flatMap((match) => [
+    ...(match.teamA || []),
+    ...(match.teamB || []),
+  ]);
+}
+
+function assignmentRestIds(matches, appState = state) {
+  const selectedIds = new Set(assignmentPlayerIds(matches).filter(Boolean));
+  return activePlayersFrom(appState)
+    .filter((player) => !selectedIds.has(player.id))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((player) => player.id);
+}
+
+function validateAssignmentMatches(matches, appState = state, options = {}) {
+  const activeIds = new Set(activePlayersFrom(appState).map((player) => player.id));
+  const errors = [];
+  const seen = new Set();
+  const otherCourtIds = options.otherCourtIds || new Set();
+
+  for (const match of matches || []) {
+    const ids = [...(match.teamA || []), ...(match.teamB || [])];
+    const courtLabel = `Court ${match.court}`;
+
+    if (ids.length !== 4 || ids.some((id) => !id)) {
+      errors.push(`${courtLabel} needs 4 players`);
+      continue;
+    }
+
+    const unique = new Set(ids);
+    if (unique.size !== ids.length) {
+      errors.push(`${courtLabel} has duplicate players`);
+    }
+
+    for (const playerId of ids) {
+      if (!activeIds.has(playerId)) {
+        errors.push(`${playerName(playerId)} is not active`);
+      }
+      if (otherCourtIds.has(playerId)) {
+        errors.push(`${playerName(playerId)} is already on another court`);
+      }
+      if (seen.has(playerId)) {
+        errors.push(`${playerName(playerId)} is assigned more than once`);
+      }
+      seen.add(playerId);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    usedIds: seen,
+  };
+}
+
+function playerIdsForSelect(matches, currentValue = "", otherUnavailableIds = new Set()) {
+  const ids = new Set(assignmentPlayerIds(matches).filter(Boolean));
+  for (const playerId of otherUnavailableIds) {
+    ids.add(playerId);
+  }
+  if (currentValue) ids.delete(currentValue);
+  return ids;
 }
 
 function addBulkPlayers() {
@@ -856,6 +994,140 @@ function buildUpNextPlan(stats) {
   };
 }
 
+function updateStartAssignmentSlot(court, teamKey, slotIndex, playerId) {
+  const draft = startingAssignmentDraft();
+  const match = draft.matches.find((item) => item.court === Number(court));
+  const team = teamKey === "B" ? "teamB" : "teamA";
+
+  if (!match || slotIndex < 0 || slotIndex > 1) return;
+  match[team][slotIndex] = playerId;
+
+  setState((current) => ({
+    ...current,
+    assignmentDraft: draft,
+  }));
+}
+
+function resetStartAssignments() {
+  setState((current) => ({
+    ...current,
+    assignmentDraft: null,
+  }));
+  showToast("Starting courts restored to auto-fill");
+}
+
+function clearStartAssignments() {
+  setState((current) => ({
+    ...current,
+    assignmentDraft: emptyStartAssignmentDraft(),
+  }));
+  showToast("Starting courts cleared");
+}
+
+function startMatchEdit(matchId) {
+  const round = currentRound();
+  const match = activeMatches(round).find((item) => item.id === matchId);
+  if (!match) return;
+
+  setState((current) => ({
+    ...current,
+    editingMatchId: matchId,
+    matchEditDraft: {
+      matchId,
+      teamA: [...match.teamA],
+      teamB: [...match.teamB],
+    },
+  }));
+}
+
+function updateMatchEditSlot(teamKey, slotIndex, playerId) {
+  const team = teamKey === "B" ? "teamB" : "teamA";
+  const draft = state.matchEditDraft
+    ? {
+        ...state.matchEditDraft,
+        teamA: [...(state.matchEditDraft.teamA || ["", ""])],
+        teamB: [...(state.matchEditDraft.teamB || ["", ""])],
+      }
+    : null;
+
+  if (!draft || slotIndex < 0 || slotIndex > 1) return;
+  draft[team][slotIndex] = playerId;
+
+  setState((current) => ({
+    ...current,
+    matchEditDraft: draft,
+  }));
+}
+
+function cancelMatchEdit() {
+  setState((current) => ({
+    ...current,
+    editingMatchId: "",
+    matchEditDraft: null,
+  }));
+}
+
+function saveMatchEdit() {
+  const roundIndex = state.rounds.length - 1;
+  const round = currentRound();
+  const draft = state.matchEditDraft;
+  if (!round || !draft) return;
+
+  const originalMatch = activeMatches(round).find((match) => match.id === draft.matchId);
+  if (!originalMatch) return;
+
+  const candidate = {
+    court: originalMatch.court,
+    teamA: [...(draft.teamA || [])],
+    teamB: [...(draft.teamB || [])],
+  };
+  const otherCourtIds = activePlayerIdsOnCourts(round, originalMatch.id);
+  const validation = validateAssignmentMatches([candidate], state, { otherCourtIds });
+
+  if (!validation.valid) {
+    showToast(validation.errors[0]);
+    return;
+  }
+
+  setState((current) => {
+    const activeRound = current.rounds[roundIndex];
+    const updatedMatches = activeRound.matches
+      .map((match) =>
+        match.id === draft.matchId
+          ? {
+              ...match,
+              teamA: [...candidate.teamA],
+              teamB: [...candidate.teamB],
+            }
+          : match,
+      )
+      .sort((a, b) => a.court - b.court);
+    const updatedRound = {
+      ...activeRound,
+      matches: updatedMatches,
+      partnerPairs: appendPartnerPairs(
+        partnerPairsFromMatches(activeMatches({ ...activeRound, matches: updatedMatches })),
+        activeRound.partnerPairs || [],
+      ),
+    };
+    updatedRound.restIds = waitingPlayerIdsFor(
+      {
+        ...current,
+        rounds: current.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
+      },
+      updatedRound,
+    );
+
+    return {
+      ...current,
+      editingMatchId: "",
+      matchEditDraft: null,
+      rounds: current.rounds.map((item, index) => (index === roundIndex ? updatedRound : item)),
+    };
+  });
+  showToast(`Court ${originalMatch.court} updated`);
+}
+
 function startRound() {
   if (state.rounds.length) {
     showToast("Reset Day before starting a new session");
@@ -863,17 +1135,36 @@ function startRound() {
   }
 
   const startedAt = new Date().toISOString();
-  const plan = buildRoundPlan(computeStats(), { startedAt });
+  const draft = startingAssignmentDraft(computeStats());
+  const validation = validateAssignmentMatches(draft.matches);
 
-  if (plan.slots < 4) {
+  if (!draft.matches.length) {
     showToast("At least 4 active players are needed");
     setState({ tab: "players" });
     return;
   }
 
+  if (!validation.valid) {
+    showToast(validation.errors[0]);
+    return;
+  }
+
+  const matches = draft.matches.map((match) => ({
+    id: uid("match"),
+    court: match.court,
+    teamA: [...match.teamA],
+    teamB: [...match.teamB],
+    winner: null,
+    startedAt,
+  }));
+  const restIds = assignmentRestIds(matches);
+
   setState((current) => ({
     ...current,
     tab: "courts",
+    assignmentDraft: null,
+    editingMatchId: "",
+    matchEditDraft: null,
     rounds: [
       ...current.rounds,
       {
@@ -881,10 +1172,10 @@ function startRound() {
         number: current.rounds.length + 1,
         createdAt: startedAt,
         completedAt: null,
-        restIds: plan.restIds,
-        matches: plan.matches,
+        restIds,
+        matches,
         completedMatches: [],
-        partnerPairs: partnerPairsFromMatches(plan.matches),
+        partnerPairs: partnerPairsFromMatches(matches),
       },
     ],
   }));
@@ -1011,13 +1302,25 @@ function reshufflePartners() {
 function clearRounds() {
   if (!state.rounds.length) return;
   if (!window.confirm("Clear all rounds and keep the player list?")) return;
-  setState((current) => ({ ...current, rounds: [] }));
+  setState((current) => ({
+    ...current,
+    rounds: [],
+    assignmentDraft: null,
+    editingMatchId: "",
+    matchEditDraft: null,
+  }));
 }
 
 function undoLastRound() {
   if (!state.rounds.length) return;
   if (!window.confirm("Remove the latest round?")) return;
-  setState((current) => ({ ...current, rounds: current.rounds.slice(0, -1) }));
+  setState((current) => ({
+    ...current,
+    rounds: current.rounds.slice(0, -1),
+    assignmentDraft: null,
+    editingMatchId: "",
+    matchEditDraft: null,
+  }));
 }
 
 function resetSession() {
@@ -1420,9 +1723,102 @@ function renderCourts(stats, round) {
       </div>
     </section>
 
-    ${renderUpNext(stats)}
+    ${round ? renderUpNext(stats) : renderStartAssignments(stats)}
 
-    ${round ? renderRound(round, stats) : renderNoRound()}
+    ${round ? renderRound(round, stats) : ""}
+  `;
+}
+
+function renderStartAssignments(stats) {
+  const draft = startingAssignmentDraft(stats);
+  if (!draft.matches.length) return renderNoRound();
+
+  const validation = validateAssignmentMatches(draft.matches);
+  const restIds = assignmentRestIds(draft.matches);
+
+  return `
+    <section class="panel assignment-panel">
+      <div class="section-head">
+        <div>
+          <h2>Starting Court Assignments</h2>
+          <span class="small">Auto-filled, editable before the first serve</span>
+        </div>
+        <div class="section-actions">
+          <button class="secondary compact" id="auto-fill-assignments" type="button">Auto Fill</button>
+          <button class="secondary compact" id="clear-assignments" type="button">Clear</button>
+        </div>
+      </div>
+      <div class="assignment-grid">
+        ${draft.matches.map((match) => renderStartAssignmentCourt(match, draft.matches)).join("")}
+      </div>
+      ${
+        validation.valid
+          ? `<div class="assignment-note">Waiting at start: ${
+              restIds.length
+                ? restIds.map((id) => `<strong>${escapeHtml(playerName(id))}</strong>`).join("")
+                : "<span>Everyone starts on court</span>"
+            }</div>`
+          : `<div class="assignment-error">${escapeHtml(validation.errors[0])}</div>`
+      }
+    </section>
+  `;
+}
+
+function renderStartAssignmentCourt(match, matches) {
+  return `
+    <article class="assignment-card ${courtToneClass(match.court)}">
+      <div class="assignment-title">
+        <strong>Court ${match.court}</strong>
+        <span>starting game</span>
+      </div>
+      <div class="assignment-teams">
+        ${renderAssignmentTeam("Team A", match.teamA, (playerId, index) =>
+          renderAssignmentSelect(playerId, playerIdsForSelect(matches, playerId), {
+            startCourt: match.court,
+            startTeam: "A",
+            startSlot: index,
+          }),
+        )}
+        ${renderAssignmentTeam("Team B", match.teamB, (playerId, index) =>
+          renderAssignmentSelect(playerId, playerIdsForSelect(matches, playerId), {
+            startCourt: match.court,
+            startTeam: "B",
+            startSlot: index,
+          }),
+        )}
+      </div>
+    </article>
+  `;
+}
+
+function renderAssignmentTeam(label, playerIds, selectRenderer) {
+  return `
+    <div class="assignment-team">
+      <span>${label}</span>
+      <div class="assignment-slots">
+        ${[0, 1].map((index) => selectRenderer(playerIds[index] || "", index)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderAssignmentSelect(value, unavailableIds, attrs) {
+  const dataAttrs = Object.entries(attrs)
+    .map(([key, attrValue]) => `data-${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}="${escapeHtml(attrValue)}"`)
+    .join(" ");
+  const players = [...activePlayers()].sort((a, b) => a.name.localeCompare(b.name));
+
+  return `
+    <select class="player-select" ${dataAttrs}>
+      <option value="">Choose player</option>
+      ${players
+        .map((player) => {
+          const selected = player.id === value;
+          const disabled = unavailableIds.has(player.id) && !selected;
+          return `<option value="${player.id}" ${selected ? "selected" : ""} ${disabled ? "disabled" : ""}>${escapeHtml(player.name)}</option>`;
+        })
+        .join("")}
+    </select>
   `;
 }
 
@@ -1518,16 +1914,67 @@ function renderCourtSlot(round, court) {
 }
 
 function renderMatch(match) {
+  if (state.editingMatchId === match.id) return renderMatchEditor(match);
+
   return `
     <article class="match-card ${courtToneClass(match.court)}">
       <div class="match-title">
         <strong>Court ${match.court}</strong>
-        <span>${matchElapsedLabel(match)} elapsed</span>
+        <div class="match-title-actions">
+          <span>${matchElapsedLabel(match)} elapsed</span>
+          <button class="mini-button compact" data-edit-match="${match.id}" type="button">Edit</button>
+        </div>
       </div>
       <div class="teams">
         ${renderTeam(match, "A", match.teamA)}
         ${renderTeam(match, "B", match.teamB)}
       </div>
+    </article>
+  `;
+}
+
+function renderMatchEditor(match) {
+  const draft =
+    state.matchEditDraft && state.matchEditDraft.matchId === match.id
+      ? state.matchEditDraft
+      : { matchId: match.id, teamA: [...match.teamA], teamB: [...match.teamB] };
+  const editMatches = [
+    {
+      court: match.court,
+      teamA: draft.teamA || ["", ""],
+      teamB: draft.teamB || ["", ""],
+    },
+  ];
+  const otherCourtIds = activePlayerIdsOnCourts(currentRound(), match.id);
+  const validation = validateAssignmentMatches(editMatches, state, { otherCourtIds });
+
+  return `
+    <article class="match-card match-editor ${courtToneClass(match.court)}">
+      <div class="match-title">
+        <strong>Edit Court ${match.court}</strong>
+        <div class="match-title-actions">
+          <span>${matchElapsedLabel(match)} elapsed</span>
+        </div>
+      </div>
+      <div class="assignment-teams live-edit-teams">
+        ${renderAssignmentTeam("Team A", draft.teamA || ["", ""], (playerId, index) =>
+          renderAssignmentSelect(playerId, playerIdsForSelect(editMatches, playerId, otherCourtIds), {
+            editTeam: "A",
+            editSlot: index,
+          }),
+        )}
+        ${renderAssignmentTeam("Team B", draft.teamB || ["", ""], (playerId, index) =>
+          renderAssignmentSelect(playerId, playerIdsForSelect(editMatches, playerId, otherCourtIds), {
+            editTeam: "B",
+            editSlot: index,
+          }),
+        )}
+      </div>
+      <div class="edit-actions">
+        <button class="primary" id="save-match-edit" type="button">Save Court</button>
+        <button class="secondary" id="cancel-match-edit" type="button">Cancel</button>
+      </div>
+      ${validation.valid ? "" : `<div class="assignment-error inline-error">${escapeHtml(validation.errors[0])}</div>`}
     </article>
   `;
 }
@@ -1747,6 +2194,23 @@ function bindEvents() {
   const startRoundButton = app.querySelector("#start-round");
   if (startRoundButton) startRoundButton.addEventListener("click", startRound);
 
+  const autoFillAssignments = app.querySelector("#auto-fill-assignments");
+  if (autoFillAssignments) autoFillAssignments.addEventListener("click", resetStartAssignments);
+
+  const clearAssignments = app.querySelector("#clear-assignments");
+  if (clearAssignments) clearAssignments.addEventListener("click", clearStartAssignments);
+
+  app.querySelectorAll("[data-start-court][data-start-team][data-start-slot]").forEach((select) => {
+    select.addEventListener("change", () =>
+      updateStartAssignmentSlot(
+        select.dataset.startCourt,
+        select.dataset.startTeam,
+        Number(select.dataset.startSlot),
+        select.value,
+      ),
+    );
+  });
+
   const reshuffleButton = app.querySelector("#reshuffle-partners");
   if (reshuffleButton) reshuffleButton.addEventListener("click", reshufflePartners);
 
@@ -1755,6 +2219,22 @@ function bindEvents() {
 
   const undoRoundButton = app.querySelector("#undo-round");
   if (undoRoundButton) undoRoundButton.addEventListener("click", undoLastRound);
+
+  app.querySelectorAll("[data-edit-match]").forEach((button) => {
+    button.addEventListener("click", () => startMatchEdit(button.dataset.editMatch));
+  });
+
+  app.querySelectorAll("[data-edit-team][data-edit-slot]").forEach((select) => {
+    select.addEventListener("change", () =>
+      updateMatchEditSlot(select.dataset.editTeam, Number(select.dataset.editSlot), select.value),
+    );
+  });
+
+  const saveMatchEditButton = app.querySelector("#save-match-edit");
+  if (saveMatchEditButton) saveMatchEditButton.addEventListener("click", saveMatchEdit);
+
+  const cancelMatchEditButton = app.querySelector("#cancel-match-edit");
+  if (cancelMatchEditButton) cancelMatchEditButton.addEventListener("click", cancelMatchEdit);
 
   app.querySelectorAll("[data-match][data-winner]").forEach((button) => {
     button.addEventListener("click", () => recordWinner(button.dataset.match, button.dataset.winner));
