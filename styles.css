@@ -172,7 +172,6 @@ button:disabled {
 .panel,
 .player-row,
 .match-card,
-.history-card,
 .empty-state {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -365,7 +364,6 @@ button:disabled {
 
 .player-list,
 .court-list,
-.history-list,
 .pair-list {
   display: grid;
   gap: 8px;
@@ -795,39 +793,72 @@ button:disabled {
   text-align: center;
 }
 
-.history-card {
-  padding: 12px;
-  box-shadow: none;
-}
-
-.history-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.ranking-list {
+  display: grid;
   gap: 8px;
-  margin-bottom: 8px;
 }
 
-.history-head h3 {
-  margin: 0;
-  font-size: 0.98rem;
+.ranking-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
 }
 
-.history-head span {
+.rank-number {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--teal);
+  color: #fff;
+  font-weight: 900;
+}
+
+.rank-player {
+  min-width: 0;
+}
+
+.rank-player strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+}
+
+.rank-player span {
+  display: block;
+  margin-top: 3px;
   color: var(--muted);
   font-size: 0.78rem;
-  font-weight: 800;
 }
 
-.history-matches {
+.rank-stats {
+  grid-column: 1 / -1;
   display: grid;
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
 }
 
-.history-line {
+.rank-stats span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
   color: var(--muted);
-  font-size: 0.86rem;
-  line-height: 1.45;
+  padding: 7px 6px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.rank-stats strong {
+  display: block;
+  color: var(--ink);
+  font-size: 0.94rem;
 }
 
 .toast {
@@ -875,6 +906,10 @@ button:disabled {
   .pair-row strong {
     display: none;
   }
+
+  .rank-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 @media (min-width: 521px) and (max-width: 719px) {
@@ -911,7 +946,6 @@ button:disabled {
   }
 
   .court-list,
-  .history-list,
   .up-next-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

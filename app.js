@@ -32,6 +32,7 @@ function loadState() {
     return {
       ...defaultState,
       ...saved,
+      tab: saved.tab === "history" ? "ranking" : saved.tab || defaultState.tab,
       schedule: {
         ...defaultState.schedule,
         ...(saved.schedule || {}),
@@ -713,12 +714,6 @@ function formatTime(date) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function roundDurationLabel(round) {
-  if (!round.completedAt) return "in progress";
-  const minutes = (new Date(round.completedAt).getTime() - new Date(round.createdAt).getTime()) / 60000;
-  return formatMinutes(minutes);
-}
-
 function currentRoundElapsedLabel(round) {
   if (!round) return "0 min";
   const end = round.completedAt ? new Date(round.completedAt).getTime() : Date.now();
@@ -752,13 +747,13 @@ function render() {
       <nav class="tabs" aria-label="App sections">
         ${tabButton("players", "Game Info")}
         ${tabButton("courts", "Courts")}
-        ${tabButton("history", "History")}
+        ${tabButton("ranking", "Ranking")}
       </nav>
     </header>
     <section class="content">
       ${state.tab === "players" ? renderPlayers(stats) : ""}
       ${state.tab === "courts" ? renderCourts(stats, round) : ""}
-      ${state.tab === "history" ? renderHistory() : ""}
+      ${state.tab === "ranking" ? renderRanking(stats) : ""}
     </section>
     ${state.toast ? `<div class="toast" role="status">${escapeHtml(state.toast)}</div>` : ""}
   `;
@@ -1097,49 +1092,67 @@ function summaryStat(label, value, tone = "", note = "") {
   `;
 }
 
-function renderHistory() {
+function rankedPlayers(stats) {
+  return [...state.players].sort((a, b) => {
+    const left = stats[a.id];
+    const right = stats[b.id];
+    const leftPct = left.played ? left.wins / left.played : 0;
+    const rightPct = right.played ? right.wins / right.played : 0;
+    const leftDiff = left.wins - left.losses;
+    const rightDiff = right.wins - right.losses;
+
+    if (right.wins !== left.wins) return right.wins - left.wins;
+    if (rightPct !== leftPct) return rightPct - leftPct;
+    if (rightDiff !== leftDiff) return rightDiff - leftDiff;
+    if (right.played !== left.played) return right.played - left.played;
+    if (left.rests !== right.rests) return left.rests - right.rests;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderRanking(stats) {
+  const players = rankedPlayers(stats);
+  const completedGames = state.rounds.reduce(
+    (total, round) => total + round.matches.filter((match) => match.winner).length,
+    0,
+  );
+
   return `
-    <section class="panel">
+    <section class="panel ranking-panel">
       <div class="section-head">
-        <h2>History</h2>
-        <span class="small">${state.rounds.length} round${state.rounds.length === 1 ? "" : "s"}</span>
+        <h2>Player Ranking</h2>
+        <span class="small">${completedGames} completed game${completedGames === 1 ? "" : "s"}</span>
       </div>
-      <div class="history-list">
+      <div class="ranking-list">
         ${
-          state.rounds.length
-            ? [...state.rounds].reverse().map((round) => renderHistoryRound(round)).join("")
-            : `<div class="empty-state">No rounds yet</div>`
+          players.length
+            ? players.map((player, index) => renderRankingRow(player, stats[player.id], index + 1)).join("")
+            : `<div class="empty-state">No players yet</div>`
         }
       </div>
     </section>
   `;
 }
 
-function renderHistoryRound(round) {
+function renderRankingRow(player, record, rank) {
+  const winPct = record.played ? Math.round((record.wins / record.played) * 100) : 0;
+  const partnerId = partnerForPlayer(player.id);
+
   return `
-    <article class="history-card">
-      <div class="history-head">
-        <h3>Round ${round.number}</h3>
-        <span>${roundDurationLabel(round)}</span>
+    <article class="ranking-card">
+      <div class="rank-number">${rank}</div>
+      <div class="rank-player">
+        <strong>${escapeHtml(player.name)}</strong>
+        <span>${player.active ? "Active" : "Inactive"}${partnerId ? ` - paired with ${escapeHtml(playerName(partnerId))}` : ""}</span>
       </div>
-      <div class="history-matches">
-        ${round.matches.map((match) => renderHistoryMatch(match)).join("")}
-        <div class="history-line">Rest: ${
-          round.restIds.length ? round.restIds.map((id) => escapeHtml(playerName(id))).join(", ") : "none"
-        }</div>
+      <div class="rank-stats">
+        <span><strong>${record.wins}</strong> W</span>
+        <span><strong>${record.losses}</strong> L</span>
+        <span><strong>${winPct}%</strong> Win</span>
+        <span><strong>${record.played}</strong> Played</span>
+        <span><strong>${record.rests}</strong> Rest</span>
       </div>
     </article>
-  `;
-}
-
-function renderHistoryMatch(match) {
-  const teamA = match.teamA.map((id) => playerName(id)).join(" / ");
-  const teamB = match.teamB.map((id) => playerName(id)).join(" / ");
-  const winner = match.winner ? `Team ${match.winner}` : "open";
-  return `
-    <div class="history-line">
-      Court ${match.court}: ${escapeHtml(teamA)} vs ${escapeHtml(teamB)} - ${winner}
-    </div>
   `;
 }
 
