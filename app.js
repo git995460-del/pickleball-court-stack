@@ -298,13 +298,48 @@ function removePairRequest(pairId) {
   }));
 }
 
-function updatePairDraft(field, value) {
+function assignPairDraft(playerId, requestedSlot = "") {
+  if (!playerId || !state.players.some((player) => player.id === playerId && player.active)) {
+    return;
+  }
+
+  if (partnerForPlayer(playerId)) {
+    showToast("Remove the existing pair first");
+    return;
+  }
+
+  setState((current) => {
+    const draft = { ...current.pairDraft };
+    const slot = requestedSlot || (!draft.a ? "a" : !draft.b ? "b" : "a");
+
+    if (requestedSlot && draft[requestedSlot] === playerId) {
+      draft[requestedSlot] = "";
+      return {
+        ...current,
+        pairDraft: draft,
+      };
+    }
+
+    if (draft.a === playerId) draft.a = "";
+    if (draft.b === playerId) draft.b = "";
+
+    draft[slot] = playerId;
+
+    if (draft.a === draft.b) {
+      draft[slot === "a" ? "b" : "a"] = "";
+    }
+
+    return {
+      ...current,
+      pairDraft: draft,
+    };
+  });
+}
+
+function clearPairDraft() {
   setState((current) => ({
     ...current,
-    pairDraft: {
-      ...current.pairDraft,
-      [field]: value,
-    },
+    pairDraft: { ...defaultState.pairDraft },
   }));
 }
 
@@ -663,6 +698,13 @@ function roundDurationLabel(round) {
   return formatMinutes(minutes);
 }
 
+function currentRoundElapsedLabel(round) {
+  if (!round) return "0 min";
+  const end = round.completedAt ? new Date(round.completedAt).getTime() : Date.now();
+  const started = new Date(round.createdAt).getTime();
+  return formatMinutes((end - started) / 60000);
+}
+
 function render() {
   const stats = computeStats();
   const activeCount = activePlayers().length;
@@ -687,7 +729,7 @@ function render() {
         </div>
       </div>
       <nav class="tabs" aria-label="App sections">
-        ${tabButton("players", "Players")}
+        ${tabButton("players", "Game Info")}
         ${tabButton("courts", "Courts")}
         ${tabButton("history", "History")}
       </nav>
@@ -715,6 +757,8 @@ function renderPlayers(stats) {
   const players = [...state.players].sort((a, b) => a.name.localeCompare(b.name));
 
   return `
+    ${renderSchedule()}
+
     <section class="panel hero-panel">
       <div class="section-head">
         <h2>Add Players</h2>
@@ -726,6 +770,8 @@ function renderPlayers(stats) {
         <button class="danger" id="reset-session-secondary" type="button">Reset Day</button>
       </div>
     </section>
+
+    ${renderPairRequests(players)}
 
     <section class="panel">
       <div class="section-head">
@@ -740,15 +786,16 @@ function renderPlayers(stats) {
         }
       </div>
     </section>
-
-    ${renderPairRequests(players)}
   `;
 }
 
 function renderPlayer(player, record) {
   const partnerId = partnerForPlayer(player.id);
+  const canPair = player.active && !partnerId;
   return `
-    <article class="player-row">
+    <article class="player-row ${canPair ? "draggable-player" : ""}" ${
+      canPair ? `draggable="true" data-drag-player="${player.id}"` : ""
+    }>
       <div class="player-main">
         <span class="player-name">${escapeHtml(player.name)}</span>
         <div class="player-meta">
@@ -779,16 +826,19 @@ function renderPairRequests(players) {
       ${
         selectablePlayers.length >= 2
           ? `
-            <div class="pair-form">
-              <select class="select-input" id="pair-a" aria-label="First partner">
-                <option value="">Player 1</option>
-                ${renderPlayerOptions(selectablePlayers, state.pairDraft.a)}
-              </select>
-              <select class="select-input" id="pair-b" aria-label="Second partner">
-                <option value="">Player 2</option>
-                ${renderPlayerOptions(selectablePlayers, state.pairDraft.b)}
-              </select>
+            <div class="pair-builder">
+              ${renderPairDropSlot("a", "Partner 1")}
+              ${renderPairDropSlot("b", "Partner 2")}
+            </div>
+            <div class="pair-actions">
               <button class="secondary" id="add-pair" type="button">Pair Together</button>
+              <button class="ghost" id="clear-pair-draft" type="button">Clear Slots</button>
+            </div>
+            <div class="active-roster">
+              <span class="active-roster-label">Active roster</span>
+              <div class="chip-list">
+                ${selectablePlayers.map((player) => renderPlayerChip(player)).join("")}
+              </div>
             </div>
           `
           : `<div class="empty-state">Add at least 2 active players to set partner requests</div>`
@@ -804,13 +854,27 @@ function renderPairRequests(players) {
   `;
 }
 
-function renderPlayerOptions(players, selectedId) {
-  return players
-    .map(
-      (player) =>
-        `<option value="${player.id}" ${player.id === selectedId ? "selected" : ""}>${escapeHtml(player.name)}</option>`,
-    )
-    .join("");
+function renderPairDropSlot(slot, label) {
+  const playerId = state.pairDraft[slot];
+  return `
+    <button class="drop-slot ${playerId ? "filled" : ""}" data-drop-slot="${slot}" type="button">
+      <span>${label}</span>
+      <strong>${playerId ? escapeHtml(playerName(playerId)) : "Drop or tap a player"}</strong>
+    </button>
+  `;
+}
+
+function renderPlayerChip(player) {
+  const lockedPartner = partnerForPlayer(player.id);
+  const selected = state.pairDraft.a === player.id || state.pairDraft.b === player.id;
+  return `
+    <button class="player-chip ${selected ? "selected" : ""}" ${
+      lockedPartner ? "disabled" : `draggable="true" data-drag-player="${player.id}" data-draft-player="${player.id}"`
+    } type="button">
+      ${escapeHtml(player.name)}
+      ${lockedPartner ? `<small>paired</small>` : ""}
+    </button>
+  `;
 }
 
 function renderPairRequest(pair) {
@@ -826,30 +890,15 @@ function renderPairRequest(pair) {
 
 function renderCourts(stats, round) {
   return `
-    ${renderSchedule()}
-
-    <section class="panel court-control-panel">
-      <div class="section-head">
-        <h2>Courts</h2>
-        <span class="small">${Math.max(0, state.courtCount * 4)} slots</span>
-      </div>
-      <div class="court-settings">
-        <button class="mini-button" id="court-minus" type="button">-</button>
-        <input class="number-input" id="court-count" min="1" max="12" inputmode="numeric" value="${state.courtCount}" />
-        <button class="mini-button" id="court-plus" type="button">+</button>
-      </div>
-    </section>
-
-    <section class="panel">
+    <section class="panel live-courts-panel">
       <div class="round-header">
         <div class="round-title">
           <h2>${round ? `Round ${round.number}` : "No Active Round"}</h2>
-          <span>${round ? `${round.matches.length} court game${round.matches.length === 1 ? "" : "s"}` : `${activePlayers().length} active players`}</span>
+          <span>${round ? `${currentRoundElapsedLabel(round)} elapsed` : `${activePlayers().length} active players`}</span>
         </div>
         <div class="actions">
           <button class="primary" id="start-round" type="button">${round && roundComplete(round) ? "Next Round" : "Start Round"}</button>
           <button class="secondary" id="undo-round" type="button" ${state.rounds.length ? "" : "disabled"}>Undo</button>
-          <button class="danger" id="clear-rounds" type="button" ${state.rounds.length ? "" : "disabled"}>Clear Rounds</button>
         </div>
       </div>
     </section>
@@ -867,6 +916,14 @@ function renderSchedule() {
         <span class="small">${formatTime(forecast.start)} to ${formatTime(forecast.end)}</span>
       </div>
       <div class="schedule-form">
+        <label class="field">
+          <span>Courts</span>
+          <div class="court-settings inline-courts">
+            <button class="mini-button" id="court-minus" type="button">-</button>
+            <input class="number-input" id="court-count" min="1" max="12" inputmode="numeric" value="${state.courtCount}" />
+            <button class="mini-button" id="court-plus" type="button">+</button>
+          </div>
+        </label>
         <label class="field">
           <span>Start</span>
           <input class="time-input" id="schedule-start" type="time" value="${escapeHtml(state.schedule.startTime)}" />
@@ -900,6 +957,14 @@ function renderNoRound() {
 
 function renderRound(round, stats) {
   return `
+    <section class="panel compact-summary">
+      <div class="stats-grid">
+        ${summaryStat("Elapsed", currentRoundElapsedLabel(round), "teal")}
+        ${summaryStat("Court games", round.matches.length, "blue")}
+        ${summaryStat("Open", round.matches.filter((match) => !match.winner).length, "coral")}
+        ${summaryStat("Resting", round.restIds.length, "amber")}
+      </div>
+    </section>
     <section class="court-list">
       ${round.matches.map((match) => renderMatch(match)).join("")}
     </section>
@@ -916,14 +981,6 @@ function renderRound(round, stats) {
                 .join("")
             : `<span class="badge win">Everyone plays</span>`
         }
-      </div>
-    </section>
-    <section class="panel">
-      <div class="stats-grid">
-        ${summaryStat("Played", Object.values(stats).reduce((sum, record) => sum + record.played, 0), "blue")}
-        ${summaryStat("Wins", Object.values(stats).reduce((sum, record) => sum + record.wins, 0), "teal")}
-        ${summaryStat("Rests", Object.values(stats).reduce((sum, record) => sum + record.rests, 0), "amber")}
-        ${summaryStat("Open", round.matches.filter((match) => !match.winner).length, "coral")}
       </div>
     </section>
   `;
@@ -1034,18 +1091,50 @@ function bindEvents() {
   const resetButtons = app.querySelectorAll("#reset-session, #reset-session-secondary");
   resetButtons.forEach((button) => button.addEventListener("click", resetSession));
 
-  const pairA = app.querySelector("#pair-a");
-  if (pairA) {
-    pairA.addEventListener("change", (event) => updatePairDraft("a", event.target.value));
-  }
-
-  const pairB = app.querySelector("#pair-b");
-  if (pairB) {
-    pairB.addEventListener("change", (event) => updatePairDraft("b", event.target.value));
-  }
-
   const addPair = app.querySelector("#add-pair");
   if (addPair) addPair.addEventListener("click", addPairRequest);
+
+  const clearPair = app.querySelector("#clear-pair-draft");
+  if (clearPair) clearPair.addEventListener("click", clearPairDraft);
+
+  app.querySelectorAll("[data-draft-player]").forEach((button) => {
+    button.addEventListener("click", () => assignPairDraft(button.dataset.draftPlayer));
+  });
+
+  app.querySelectorAll("[data-drag-player]").forEach((element) => {
+    element.addEventListener("dragstart", (event) => {
+      event.dataTransfer.setData("text/plain", element.dataset.dragPlayer);
+      event.dataTransfer.effectAllowed = "copy";
+      element.classList.add("dragging");
+    });
+
+    element.addEventListener("dragend", () => {
+      element.classList.remove("dragging");
+    });
+  });
+
+  app.querySelectorAll("[data-drop-slot]").forEach((slot) => {
+    slot.addEventListener("click", () => {
+      const currentPlayer = state.pairDraft[slot.dataset.dropSlot];
+      if (currentPlayer) assignPairDraft(currentPlayer, slot.dataset.dropSlot);
+    });
+
+    slot.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      slot.classList.add("drag-over");
+    });
+
+    slot.addEventListener("dragleave", () => {
+      slot.classList.remove("drag-over");
+    });
+
+    slot.addEventListener("drop", (event) => {
+      event.preventDefault();
+      slot.classList.remove("drag-over");
+      assignPairDraft(event.dataTransfer.getData("text/plain"), slot.dataset.dropSlot);
+    });
+  });
 
   app.querySelectorAll("[data-remove-pair]").forEach((button) => {
     button.addEventListener("click", () => removePairRequest(button.dataset.removePair));

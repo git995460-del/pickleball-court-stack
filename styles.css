@@ -212,7 +212,6 @@ button:disabled {
 
 .bulk-input,
 .number-input,
-.select-input,
 .time-input {
   width: 100%;
   min-height: 44px;
@@ -235,7 +234,6 @@ button:disabled {
 
 .bulk-input:focus,
 .number-input:focus,
-.select-input:focus,
 .time-input:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(8, 117, 111, 0.16);
@@ -382,6 +380,18 @@ button:disabled {
   box-shadow: none;
 }
 
+.draggable-player {
+  cursor: grab;
+}
+
+.draggable-player:active {
+  cursor: grabbing;
+}
+
+.dragging {
+  opacity: 0.62;
+}
+
 .player-main {
   min-width: 0;
 }
@@ -441,12 +451,6 @@ button:disabled {
   gap: 6px;
 }
 
-.pair-form {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
 .pair-row {
   display: grid;
   grid-template-columns: 1fr auto 1fr auto;
@@ -476,6 +480,101 @@ button:disabled {
   line-height: 1.45;
 }
 
+.pair-builder {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.drop-slot {
+  display: grid;
+  min-height: 72px;
+  align-content: center;
+  gap: 6px;
+  border: 2px dashed #a8b7c6;
+  border-radius: 8px;
+  background: #f9fbfd;
+  color: var(--muted);
+  padding: 12px;
+  text-align: left;
+}
+
+.drop-slot span {
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.drop-slot strong {
+  color: var(--ink);
+  font-size: 0.98rem;
+  overflow-wrap: anywhere;
+}
+
+.drop-slot.filled {
+  border-style: solid;
+  border-color: var(--teal);
+  background: var(--green-soft);
+}
+
+.drop-slot.drag-over {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  transform: translateY(-1px);
+}
+
+.pair-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.active-roster {
+  display: grid;
+  gap: 8px;
+}
+
+.active-roster-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.player-chip {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 7px 11px;
+  font-weight: 850;
+  cursor: grab;
+}
+
+.player-chip.selected {
+  border-color: var(--teal);
+  background: var(--green-soft);
+  color: #0f513f;
+}
+
+.player-chip small {
+  margin-left: 5px;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.player-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .court-settings {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -490,7 +589,7 @@ button:disabled {
 
 .schedule-form {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
 }
 
@@ -503,6 +602,10 @@ button:disabled {
   color: var(--muted);
   font-size: 0.76rem;
   font-weight: 850;
+}
+
+.inline-courts {
+  height: 44px;
 }
 
 .round-header {
@@ -706,6 +809,12 @@ button:disabled {
   }
 }
 
+@media (min-width: 521px) and (max-width: 719px) {
+  .schedule-form {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
 @media (min-width: 720px) {
   .app-shell {
     padding: 18px;
@@ -720,8 +829,12 @@ button:disabled {
     font-size: 1.42rem;
   }
 
-  .pair-form {
-    grid-template-columns: 1fr 1fr auto;
+  .pair-builder {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pair-actions {
+    align-items: center;
   }
 
   .round-header {
