@@ -143,13 +143,13 @@ function computeStats() {
     }
 
     for (const match of round.matches) {
-      if (!match.winner) continue;
-      const winnerIds = match.winner === "A" ? match.teamA : match.teamB;
-      const loserIds = match.winner === "A" ? match.teamB : match.teamA;
-
       for (const playerId of [...match.teamA, ...match.teamB]) {
         if (stats[playerId]) stats[playerId].played += 1;
       }
+
+      if (!match.winner) continue;
+      const winnerIds = match.winner === "A" ? match.teamA : match.teamB;
+      const loserIds = match.winner === "A" ? match.teamB : match.teamA;
 
       for (const playerId of winnerIds) {
         if (stats[playerId]) {
@@ -173,8 +173,8 @@ function computeStats() {
 function rankForPlay(player, stats) {
   const record = stats[player.id];
   return [
-    -record.rests,
     record.played,
+    -record.rests,
     record.wins - record.losses,
     player.name.toLowerCase(),
   ];
@@ -354,8 +354,9 @@ function unitRank(unit, stats) {
   const records = unit.ids.map((id) => stats[id]);
   const avg = (values) => values.reduce((total, value) => total + value, 0) / values.length;
   return [
-    -Math.max(...records.map((record) => record.rests)),
     avg(records.map((record) => record.played)),
+    -Math.max(...records.map((record) => record.rests)),
+    -avg(records.map((record) => record.rests)),
     avg(records.map((record) => record.wins - record.losses)),
     unit.names,
   ];

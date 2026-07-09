@@ -1,9 +1,9 @@
-const CACHE_NAME = "pickleball-court-stack-v6";
+const CACHE_NAME = "pickleball-court-stack-v7";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css?v=6",
-  "./app.js?v=6",
+  "./styles.css?v=7",
+  "./app.js?v=7",
   "./manifest.webmanifest",
   "./icon.svg",
 ];
