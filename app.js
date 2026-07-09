@@ -715,14 +715,6 @@ function buildCourtMatchFromState(appState, court, stats, excludedIds = new Set(
   })[0] || null;
 }
 
-function sortMatchesByLikelyFinish(matches) {
-  return [...matches].sort((a, b) => {
-    const left = new Date(a.startedAt || 0).getTime();
-    const right = new Date(b.startedAt || 0).getTime();
-    return left - right;
-  });
-}
-
 function buildUpNextPlan(stats) {
   const round = currentRound();
   const targetMatches = Math.max(1, state.courtCount > 2 ? state.courtCount - 1 : 1);
@@ -738,19 +730,8 @@ function buildUpNextPlan(stats) {
   let restIds = waitingPlayerIds(simRound);
 
   while (matches.length < targetMatches) {
-    let busyIds = activePlayerIdsOnCourts(simRound);
-    let availableCount = activePlayers().filter((player) => !busyIds.has(player.id)).length;
-
-    if (availableCount < 4) {
-      const finishCandidates = sortMatchesByLikelyFinish(simRound.matches).filter(
-        (match) => !matches.some((queued) => queued.id === match.id),
-      );
-      const freeingMatch = finishCandidates[0];
-      if (!freeingMatch) break;
-      simRound.matches = simRound.matches.filter((match) => match.id !== freeingMatch.id);
-      busyIds = activePlayerIdsOnCourts(simRound);
-      availableCount = activePlayers().filter((player) => !busyIds.has(player.id)).length;
-    }
+    const busyIds = activePlayerIdsOnCourts(simRound);
+    const availableCount = activePlayers().filter((player) => !busyIds.has(player.id)).length;
 
     if (availableCount < 4) break;
 
